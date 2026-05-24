@@ -14,4 +14,5 @@ public:
     explicit RecordManager(const std::string& path);
     bool InsertRecord(const PassengerRecord& r, int& outPageId, int& outSlot);
     bool ReadRecord(int pageId, int slot, PassengerRecord& out);
+    bool DeleteRecord(int pageId, int slot);
 };

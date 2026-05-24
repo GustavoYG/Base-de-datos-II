@@ -75,9 +75,36 @@ bool RecordManager::ReadRecord(int pageId, int slot, PassengerRecord& out) {
     int slotPos = (int)sizeof(rp->data) - (slot + 1) * slotEntrySize;
     SlotEntry se;
     std::memcpy(&se, rp->data + slotPos, slotEntrySize);
+    if (se.length == 0) return false;
 
     if (se.offset < 0 || se.offset + se.length > (int)sizeof(rp->data)) return false;
 
     std::memcpy(&out, rp->data + se.offset, sizeof(PassengerRecord));
     return true;
+}
+
+bool RecordManager::DeleteRecord(int pageId, int slot) {
+    Page page;
+    if (!pm.ReadPage(pageId, page)) return false;
+
+    RecordPage* rp = (RecordPage*)&page;
+    const int slotEntrySize = (int)sizeof(SlotEntry);
+
+    if (slot < 0 || slot >= rp->slotCount) return false;
+
+    int slotPos = (int)sizeof(rp->data) - (slot + 1) * slotEntrySize;
+    SlotEntry se;
+    std::memcpy(&se, rp->data + slotPos, slotEntrySize);
+
+    if (se.length == 0) return false; // already deleted
+
+    // mark slot as deleted (length = 0)
+    SlotEntry empty{};
+    std::memcpy(rp->data + slotPos, &empty, slotEntrySize);
+
+    // update freeBytes (add the record bytes back, slot dir size remains allocated)
+    rp->header.freeBytes = (int)(sizeof(rp->data) - rp->freeSpaceOffset - rp->slotCount * slotEntrySize) + se.length;
+    rp->header.checksum = SimpleChecksum(((unsigned char*)rp) + sizeof(PageHeader), PAGE_SIZE - sizeof(PageHeader));
+
+    return pm.WritePage(pageId, *(Page*)rp);
 }
