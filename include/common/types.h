@@ -30,10 +30,16 @@ struct Page {
     unsigned char data[PAGE_SIZE - sizeof(PageHeader)];
 };
 
+struct SlotEntry {
+    int16_t offset;
+    int16_t length;
+};
+
 struct RecordPage {
     PageHeader header;
-    int32_t recordCount;
-    unsigned char data[PAGE_SIZE - sizeof(PageHeader) - sizeof(int32_t)];
+    int16_t slotCount;
+    int16_t freeSpaceOffset;
+    unsigned char data[PAGE_SIZE - sizeof(PageHeader) - sizeof(int16_t) * 2];
 };
 
 struct IndexEntry {

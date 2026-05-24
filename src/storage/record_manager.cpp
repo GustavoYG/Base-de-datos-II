@@ -7,7 +7,8 @@
 RecordManager::RecordManager(const std::string& path) : pm(path), currentPageId(-1) {}
 
 bool RecordManager::InsertRecord(const PassengerRecord& r, int& outPageId, int& outSlot) {
-    int recordSize = (int)sizeof(PassengerRecord);
+    const int recordSize = (int)sizeof(PassengerRecord);
+    const int slotEntrySize = (int)sizeof(SlotEntry);
 
     while (true) {
         if (currentPageId < 0) {
@@ -18,27 +19,46 @@ bool RecordManager::InsertRecord(const PassengerRecord& r, int& outPageId, int& 
         if (!pm.ReadPage(currentPageId, page)) return false;
 
         RecordPage* rp = (RecordPage*)&page;
-        int maxRecords = (int)(sizeof(rp->data) / recordSize);
-        if (rp->recordCount < 0 || rp->recordCount > maxRecords) {
-            rp->recordCount = 0;
+
+        if (rp->slotCount < 0 || rp->slotCount > 32767) {
+            rp->slotCount = 0;
+        }
+        if (rp->freeSpaceOffset < 0 || rp->freeSpaceOffset > (int)sizeof(rp->data)) {
+            rp->freeSpaceOffset = 0;
         }
 
-        if (rp->recordCount >= maxRecords) {
+        int usedData = rp->freeSpaceOffset;
+        int usedSlotDir = rp->slotCount * slotEntrySize;
+        int freeSpace = (int)sizeof(rp->data) - usedData - usedSlotDir;
+
+        int required = recordSize + slotEntrySize;
+        if (freeSpace < required) {
             currentPageId = pm.AllocatePage();
             continue;
         }
 
-        int offset = rp->recordCount * recordSize;
-        std::memcpy(rp->data + offset, &r, recordSize);
-        rp->recordCount++;
+        // write record at freeSpaceOffset
+        int recordOffset = rp->freeSpaceOffset;
+        std::memcpy(rp->data + recordOffset, &r, recordSize);
+        rp->freeSpaceOffset += recordSize;
 
-        rp->header.freeBytes = (int)(sizeof(rp->data) - rp->recordCount * recordSize);
-        rp->header.checksum = SimpleChecksum(rp->data, sizeof(rp->data));
+        // build slot entry and write it at the end (grow backward)
+        SlotEntry se;
+        se.offset = (int16_t)recordOffset;
+        se.length = (int16_t)recordSize;
+
+        int slotPos = (int)sizeof(rp->data) - (rp->slotCount + 1) * slotEntrySize;
+        std::memcpy(rp->data + slotPos, &se, slotEntrySize);
+
+        rp->slotCount++;
+
+        rp->header.freeBytes = (int)(sizeof(rp->data) - rp->freeSpaceOffset - rp->slotCount * slotEntrySize);
+        rp->header.checksum = SimpleChecksum(((unsigned char*)rp) + sizeof(PageHeader), PAGE_SIZE - sizeof(PageHeader));
 
         if (!pm.WritePage(currentPageId, *(Page*)rp)) return false;
 
         outPageId = currentPageId;
-        outSlot = rp->recordCount - 1;
+        outSlot = rp->slotCount - 1;
         return true;
     }
 }
@@ -48,10 +68,16 @@ bool RecordManager::ReadRecord(int pageId, int slot, PassengerRecord& out) {
     if (!pm.ReadPage(pageId, page)) return false;
 
     RecordPage* rp = (RecordPage*)&page;
-    int recordSize = (int)sizeof(PassengerRecord);
-    if (slot < 0 || slot >= rp->recordCount) return false;
+    const int slotEntrySize = (int)sizeof(SlotEntry);
 
-    int offset = slot * recordSize;
-    std::memcpy(&out, rp->data + offset, recordSize);
+    if (slot < 0 || slot >= rp->slotCount) return false;
+
+    int slotPos = (int)sizeof(rp->data) - (slot + 1) * slotEntrySize;
+    SlotEntry se;
+    std::memcpy(&se, rp->data + slotPos, slotEntrySize);
+
+    if (se.offset < 0 || se.offset + se.length > (int)sizeof(rp->data)) return false;
+
+    std::memcpy(&out, rp->data + se.offset, sizeof(PassengerRecord));
     return true;
 }

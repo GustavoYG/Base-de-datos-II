@@ -25,15 +25,17 @@ int PageManager::AllocatePage() {
     f.seekg(0, std::ios::end);
     int size = (int)f.tellg();
     int newPageId = size / PAGE_SIZE;
-
-    Page page;
-    std::memset(&page, 0, sizeof(Page));
-    page.header.pageId = newPageId;
-    page.header.freeBytes = sizeof(page.data);
-    page.header.checksum = SimpleChecksum(page.data, sizeof(page.data));
+    // Initialize a RecordPage so slot directory fields start at zero
+    RecordPage rp;
+    std::memset(&rp, 0, sizeof(RecordPage));
+    rp.header.pageId = newPageId;
+    rp.slotCount = 0;
+    rp.freeSpaceOffset = 0;
+    rp.header.freeBytes = sizeof(rp.data);
+    rp.header.checksum = SimpleChecksum(((unsigned char*)&rp) + sizeof(PageHeader), PAGE_SIZE - sizeof(PageHeader));
 
     f.seekp(newPageId * PAGE_SIZE, std::ios::beg);
-    f.write((char*)&page, sizeof(Page));
+    f.write((char*)&rp, sizeof(RecordPage));
     f.close();
 
     return newPageId;
