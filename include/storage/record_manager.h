@@ -4,10 +4,14 @@
 
 #include "common/types.h"
 #include "storage/page_manager.h"
+#include "storage/buffer_pool.h"
+#include "storage/wal_log.h"
 
 class RecordManager {
 private:
     PageManager pm;
+    BufferPool* bp;
+    std::string walPath;
     int currentPageId;
 
 public:

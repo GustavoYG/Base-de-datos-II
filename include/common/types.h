@@ -39,7 +39,8 @@ struct RecordPage {
     PageHeader header;
     int16_t slotCount;
     int16_t freeSpaceOffset;
-    unsigned char data[PAGE_SIZE - sizeof(PageHeader) - sizeof(int16_t) * 2];
+    int16_t freeSlotHead; // index of first free slot (-1 if none)
+    unsigned char data[PAGE_SIZE - sizeof(PageHeader) - sizeof(int16_t) * 3];
 };
 
 struct IndexEntry {

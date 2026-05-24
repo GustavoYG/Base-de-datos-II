@@ -31,6 +31,7 @@ int PageManager::AllocatePage() {
     rp.header.pageId = newPageId;
     rp.slotCount = 0;
     rp.freeSpaceOffset = 0;
+    rp.freeSlotHead = -1;
     rp.header.freeBytes = sizeof(rp.data);
     rp.header.checksum = SimpleChecksum(((unsigned char*)&rp) + sizeof(PageHeader), PAGE_SIZE - sizeof(PageHeader));
 
