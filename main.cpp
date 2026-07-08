@@ -18,7 +18,7 @@ public:
         ifstream file(filename);
         if (file.is_open()) {
             string line;
-            getline(file, line); // Leer la primera línea (encabezados)
+            getline(file, line); // Leer la primera lï¿½nea (encabezados)
             data.push_back(split(line, delimiter)); // Agregar encabezados al vector
             while (getline(file, line)) {
                 data.push_back(split(line, delimiter));
@@ -84,44 +84,44 @@ public:
             cout << endl;
         }
     }
-    // Función para calcular la capacidad total en bytes
+    // Funciï¿½n para calcular la capacidad total en bytes
     unsigned long long calculateTotalCapacity() {
         unsigned long long totalCapacity = 0;
         for (const auto& rowTypes : dataTypes) {
             for (const auto& fieldType : rowTypes) {
-                // Supongamos algunos tamaños típicos para los tipos de datos
+                // Supongamos algunos tamaï¿½os tï¿½picos para los tipos de datos
                 totalCapacity += calculateFieldTypeSize(fieldType);
             }
         }
         return totalCapacity;
     }
 
-    // Función para calcular el tamaño de un tipo de datos dado su nombre
+    // Funcion para calcular el tamaoo de un tipo de datos dado su nombre
     unsigned long long calculateFieldTypeSize(const string& fieldType) {
-        // Supongamos algunos tamaños típicos para los tipos de datos
+        // Supongamos algunos tamaoos topicos para los tipos de datos
         if (fieldType == "int") {
             return sizeof(int);
         } else if (fieldType == "double") {
             return sizeof(double);
         } else {
             // Asumimos que el tipo de datos es string
-            return fieldType.size(); // Tamaño de la cadena de caracteres
+            return fieldType.size(); // Tamaï¿½o de la cadena de caracteres
         }
     }
 
-    // Función para calcular la capacidad utilizada en bytes
+    // Funcion para calcular la capacidad utilizada en bytes
     unsigned long long calculateUsedCapacity() {
-        return calculateTotalCapacity(); // Suponiendo que todos los datos están cargados en memoria
+        return calculateTotalCapacity(); // Suponiendo que todos los datos estï¿½n cargados en memoria
     }
 
-    // Función para calcular el espacio libre en bytes
+    // Funcion para calcular el espacio libre en bytes
     unsigned long long calculateFreeSpace() {
-        // Supongamos que el disco tiene un tamaño máximo de 1TB (1 terabyte)
+        // Supongamos que el disco tiene un tamaï¿½o mï¿½ximo de 1TB (1 terabyte)
         unsigned long long maxDiskSize = 1ULL * 1024 * 1024 * 1024 * 1024; // 1TB en bytes
         return maxDiskSize - calculateUsedCapacity();
     }
 
-    // Función para mostrar la información del disco
+    // Funcion para mostrar la informacion del disco
     void showDiskInfo() {
         cout << "Capacidad total del disco duro en bytes: " << calculateTotalCapacity() << endl;
         cout << "Capacidad utilizada en bytes: " << calculateUsedCapacity() << endl;
@@ -133,7 +133,7 @@ public:
         const auto& data = getData();
         const auto& headers = data[0]; // Obtener los encabezados
 
-        // Encontrar los índices de las columnas "Nombres", "Edad" y "Sexo"
+        // Encontrar los ï¿½ndices de las columnas "Nombres", "Edad" y "Sexo"
         vector<int> selectedColumnIndices;
         for (size_t i = 0; i < headers.size(); i++) {
             if (headers[i] == "Nombres" || headers[i] == "Edad" || headers[i] == "Sexo") {
@@ -161,7 +161,7 @@ public:
     const auto& data = getData();
     const auto& headers = data[0]; // Obtener los encabezados
 
-    // Encontrar el índice de la columna
+    // Encontrar el ï¿½ndice de la columna
     int columnIndex = -1;
     for (size_t i = 0; i < headers.size(); i++) {
         if (headers[i] == columnName) {
@@ -170,17 +170,17 @@ public:
         }
     }
 
-    // Verificar si se encontró la columna
+    // Verificar si se encontrï¿½ la columna
     if (columnIndex == -1) {
-        cout << "La columna '" << columnName << "' no se encontró en el archivo." << endl;
+        cout << "La columna '" << columnName << "' no se encontrï¿½ en el archivo." << endl;
         return;
     }
 
-    // Encontrar el índice de la columna de ID (asumiendo que el nombre de la columna puede ser "ID", "id" o "Id")
+    // Encontrar el ï¿½ndice de la columna de ID (asumiendo que el nombre de la columna puede ser "ID", "id" o "Id")
     int idIndex = -1;
     for (size_t i = 0; i < headers.size(); i++) {
         string header = headers[i];
-        transform(header.begin(), header.end(), header.begin(), ::tolower); // Convertir a minúsculas
+        transform(header.begin(), header.end(), header.begin(), ::tolower); // Convertir a minï¿½sculas
         if (header == "Id" || header == "ID" || header == "id" ) {
             idIndex = i;
             break;
@@ -222,8 +222,8 @@ void filterColumnData(const string& inputFilename, const string& outputFilename,
     if (inputFile.is_open() && outputFile.is_open()) {
         string line;
         while (getline(inputFile, line)) {
-            // Parsear la línea para obtener el valor a comparar
-            // Suponemos que el ID está en la primera columna y el valor a comparar en la segunda columna
+            // Parsear la lï¿½nea para obtener el valor a comparar
+            // Suponemos que el ID estï¿½ en la primera columna y el valor a comparar en la segunda columna
             string id, valueStr;
             int value;
             istringstream iss(line);
@@ -231,7 +231,7 @@ void filterColumnData(const string& inputFilename, const string& outputFilename,
             getline(iss, valueStr, '\t');
             value = stoi(valueStr); // Convertir el valor a entero
 
-            // Realizar la comparación según el operador proporcionado por el usuario
+            // Realizar la comparaciï¿½n segï¿½n el operador proporcionado por el usuario
             bool includeRow = false;
             switch (comparisonOperator) {
                 case '<':
@@ -247,11 +247,11 @@ void filterColumnData(const string& inputFilename, const string& outputFilename,
                     includeRow = (value != threshold);
                     break;
                 default:
-                    cout << "Operador de comparación no válido." << endl;
+                    cout << "Operador de comparaciï¿½n no vï¿½lido." << endl;
                     break;
             }
 
-            // Si la fila cumple con la condición, copiarla al archivo de salida
+            // Si la fila cumple con la condiciï¿½n, copiarla al archivo de salida
             if (includeRow) {
                 outputFile << line << endl;
             }
