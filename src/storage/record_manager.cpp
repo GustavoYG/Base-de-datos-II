@@ -5,9 +5,9 @@
 #include "common/utils.h"
 #include "storage/wal_log.h"
 
-RecordManager::RecordManager(const std::string& path) : pm(path), bp(nullptr), currentPageId(-1) {
+RecordManager::RecordManager(const std::string& path, ReplacementPolicy policy) : pm(path), bp(nullptr), currentPageId(-1) {
     walPath = path + ".wal";
-    bp = new BufferPool(pm, 16);
+    bp = new BufferPool(pm, 16, policy);
 
     // simple recovery: read last valid wal entry and apply to page
     std::string payload = ReadLastValidWalPayload(walPath);

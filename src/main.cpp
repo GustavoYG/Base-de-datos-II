@@ -1,12 +1,29 @@
 #include <iostream>
+#include <cstdio>
+#include <string>
+#include <vector>
 
 #include "io/csv_reader.h"
 #include "io/serializer.h"
-#include "storage/atomic_writer.h"
+#include "storage/record_manager.h"
 #include "index/simple_index.h"
-#include "storage/wal_log.h"
 
-int main() {
+static ReplacementPolicy ParsePolicy(int argc, char** argv) {
+    for (int i = 1; i < argc - 1; ++i) {
+        if (std::string(argv[i]) == "--policy") {
+            std::string p = argv[i + 1];
+            if (p == "clock") return ReplacementPolicy::CLOCK;
+            if (p == "lru") return ReplacementPolicy::LRU;
+            std::cerr << "Politica desconocida '" << p << "', usando LRU.\n";
+            return ReplacementPolicy::LRU;
+        }
+    }
+    return ReplacementPolicy::LRU;
+}
+
+int main(int argc, char** argv) {
+    ReplacementPolicy policy = ParsePolicy(argc, argv);
+
     std::vector<std::vector<std::string>> rows = CsvReader::ReadAll("data/raw/titanic.csv");
     if (rows.empty()) {
         rows = CsvReader::ReadAll("titanic.csv");
@@ -22,45 +39,29 @@ int main() {
         return 1;
     }
 
-    const std::string txtPath = "data/storage/tables/titanic.txt";
-    const std::string walPath = "data/storage/wal/titanic.wal";
+    // Usar el Storage Manager real (persistencia binaria + Buffer Pool con
+    // la politica de reemplazo elegida). Se limpia el archivo previo para
+    // no acumular inserciones en cada ejecucion.
+    const std::string binPath = "data/storage/tables/titanic.bin";
+    std::remove(binPath.c_str());
+    std::remove((binPath + ".wal").c_str());
 
-    std::string txt = SerializeRecordsText(csvRecords);
-    if (!AppendWalEntry(walPath, txt)) {
-        std::cout << "No se pudo escribir el WAL." << std::endl;
-        return 1;
-    }
-
-    std::vector<unsigned char> bytes(txt.begin(), txt.end());
-    if (!WriteAtomic(txtPath, bytes)) {
-        std::cout << "No se pudo guardar el archivo TXT." << std::endl;
-        return 1;
-    }
-
-    std::vector<PassengerRecord> records = LoadRecordsText(txtPath);
-    if (records.empty()) {
-        std::string recovered = ReadLastValidWalPayload(walPath);
-        if (!recovered.empty()) {
-            std::vector<unsigned char> recBytes(recovered.begin(), recovered.end());
-            if (WriteAtomic(txtPath, recBytes)) {
-                records = LoadRecordsText(txtPath);
-            }
-        }
-    }
-
-    if (records.empty()) {
-        std::cout << "No se pudieron cargar registros desde TXT." << std::endl;
-        return 1;
-    }
-
+    RecordManager rm(binPath, policy);
     SimpleIndex idx;
-    for (size_t i = 0; i < records.size(); ++i) {
-        idx.Add(records[i].passengerId, 0, (int)i);
+    std::vector<PassengerRecord> records; // cache para escaneos por rango
+    records.reserve(csvRecords.size());
+    for (const auto& r : csvRecords) {
+        int pid = 0, slot = 0;
+        rm.InsertRecord(r, pid, slot);
+        idx.Add(r.passengerId, pid, slot);
+        records.push_back(r);
     }
     idx.Build();
 
+    const char* policyName = (policy == ReplacementPolicy::CLOCK) ? "CLOCK" : "LRU";
+
     while (true) {
-        std::cout << "\nMenu:\n";
+        std::cout << "\nMenu (politica de reemplazo: " << policyName << "):\n";
         std::cout << "1) Buscar PassengerId\n";
         std::cout << "2) Buscar rango de edades\n";
         std::cout << "3) Listar sobrevivientes\n";
@@ -81,7 +82,11 @@ int main() {
                 continue;
             }
 
-            const PassengerRecord& r = records[(size_t)e.slot];
+            PassengerRecord r;
+            if (!rm.ReadRecord(e.pageId, e.slot, r)) {
+                std::cout << "Error de lectura en pagina " << e.pageId << " slot " << e.slot << "." << std::endl;
+                continue;
+            }
             std::cout << "ID " << r.passengerId << " | " << r.name
                       << " | edad " << r.age << " | survived " << r.survived << std::endl;
         } else if (op == 2) {

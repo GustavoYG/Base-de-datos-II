@@ -15,7 +15,7 @@ private:
     int currentPageId;
 
 public:
-    explicit RecordManager(const std::string& path);
+    explicit RecordManager(const std::string& path, ReplacementPolicy policy = ReplacementPolicy::LRU);
     bool InsertRecord(const PassengerRecord& r, int& outPageId, int& outSlot);
     bool ReadRecord(int pageId, int slot, PassengerRecord& out);
     bool UpdateRecord(int pageId, int slot, const PassengerRecord& r);
