@@ -1,6 +1,6 @@
 #pragma once
 
-#include <vector>
+#include <deque>
 #include <cstring>
 #include <unordered_map>
 #include <list>
@@ -30,7 +30,7 @@ private:
 
     PageManager& pm;
     int capacity;
-    std::vector<Frame> frames;
+    std::deque<Frame> frames;
     std::unordered_map<int, int> pageTable; // pageId -> frame index
     std::list<int> lru; // stores frame indices, front = most recent, back = least recent
 

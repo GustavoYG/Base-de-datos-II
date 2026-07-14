@@ -21,10 +21,14 @@ int BufferPool::FindVictim() {
         if (frames[idx].pinCount == 0) return idx;
     }
     // If no LRU entry (or none evictable), find any free frame (pageId == -1)
-    for (int i = 0; i < capacity; ++i) {
+    for (int i = 0; i < (int)frames.size(); ++i) {
         if (frames[i].pageId == -1) return i;
     }
-    return -1; // no victim
+    // Todas las paginas estan fijadas: ampliar el pool para no interbloquearse
+    // durante operaciones que fijan varias paginas a la vez (p.ej. split de
+    // un B+ Tree). deque mantiene estables los Page* ya entregados.
+    frames.push_back(Frame{});
+    return (int)frames.size() - 1;
 }
 
 void BufferPool::TouchFrameLRU(int frameIdx) {
@@ -86,7 +90,7 @@ bool BufferPool::UnpinPage(int pageId, bool isDirty) {
 }
 
 void BufferPool::FlushAll() {
-    for (int i = 0; i < capacity; ++i) {
+    for (int i = 0; i < (int)frames.size(); ++i) {
         if (frames[i].pageId != -1 && frames[i].dirty) {
             pm.WritePage(frames[i].pageId, frames[i].page);
             frames[i].dirty = false;
