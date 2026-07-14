@@ -14,7 +14,7 @@ int PageManager::GetPageCount() const {
     return size / PAGE_SIZE;
 }
 
-int PageManager::AllocatePage() {
+int PageManager::AllocatePage(PageType type) {
     std::fstream f(path.c_str(), std::ios::in | std::ios::out | std::ios::binary);
     if (!f) {
         f.open(path.c_str(), std::ios::out | std::ios::binary);
@@ -29,7 +29,7 @@ int PageManager::AllocatePage() {
     RecordPage rp;
     std::memset(&rp, 0, sizeof(RecordPage));
     rp.header.pageId = newPageId;
-    rp.header.pageType = (int16_t)PageType::Data;
+    rp.header.pageType = (int16_t)type;
     rp.slotCount = 0;
     rp.freeSpaceOffset = 0;
     rp.freeSlotHead = -1;

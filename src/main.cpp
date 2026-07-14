@@ -6,7 +6,7 @@
 #include "io/csv_reader.h"
 #include "io/serializer.h"
 #include "storage/record_manager.h"
-#include "index/simple_index.h"
+#include "index/bplus_tree.h"
 
 static ReplacementPolicy ParsePolicy(int argc, char** argv) {
     for (int i = 1; i < argc - 1; ++i) {
@@ -39,33 +39,37 @@ int main(int argc, char** argv) {
         return 1;
     }
 
-    // Usar el Storage Manager real (persistencia binaria + Buffer Pool con
-    // la politica de reemplazo elegida). Se limpia el archivo previo para
+    // Almacenamiento: datos en un heap file (RecordManager) y su indice primario
+    // en un B+ Tree sobre su propio archivo. Se limpian los archivos previos para
     // no acumular inserciones en cada ejecucion.
     const std::string binPath = "data/storage/tables/titanic.bin";
+    const std::string idxPath = "data/storage/tables/titanic_idx.bin";
     std::remove(binPath.c_str());
     std::remove((binPath + ".wal").c_str());
+    std::remove(idxPath.c_str());
+    std::remove((idxPath + ".meta").c_str());
 
     RecordManager rm(binPath, policy);
-    SimpleIndex idx;
-    std::vector<PassengerRecord> records; // cache para escaneos por rango
+    BPlusTree idx(idxPath, policy);
+
+    std::vector<PassengerRecord> records; // cache para seleccion por atributos no indexados
     records.reserve(csvRecords.size());
     for (const auto& r : csvRecords) {
         int pid = 0, slot = 0;
         rm.InsertRecord(r, pid, slot);
-        idx.Add(r.passengerId, pid, slot);
+        idx.Insert(r.passengerId, pid, (int16_t)slot);
         records.push_back(r);
     }
-    idx.Build();
 
     const char* policyName = (policy == ReplacementPolicy::CLOCK) ? "CLOCK" : "LRU";
 
     while (true) {
         std::cout << "\nMenu (politica de reemplazo: " << policyName << "):\n";
-        std::cout << "1) Buscar PassengerId\n";
+        std::cout << "1) Buscar PassengerId (B+ Tree)\n";
         std::cout << "2) Buscar rango de edades\n";
         std::cout << "3) Listar sobrevivientes\n";
-        std::cout << "4) Salir\n";
+        std::cout << "4) Rango de PassengerIds (B+ Tree Range)\n";
+        std::cout << "5) Salir\n";
         std::cout << "Opcion: ";
 
         int op = 0;
@@ -76,15 +80,16 @@ int main(int argc, char** argv) {
             std::cout << "PassengerId: ";
             std::cin >> id;
 
-            IndexEntry e;
-            if (!idx.Find(id, e)) {
+            int pid = 0;
+            int16_t slot = 0;
+            if (!idx.Find(id, pid, slot)) {
                 std::cout << "No encontrado." << std::endl;
                 continue;
             }
 
             PassengerRecord r;
-            if (!rm.ReadRecord(e.pageId, e.slot, r)) {
-                std::cout << "Error de lectura en pagina " << e.pageId << " slot " << e.slot << "." << std::endl;
+            if (!rm.ReadRecord(pid, slot, r)) {
+                std::cout << "Error de lectura en pagina " << pid << " slot " << slot << "." << std::endl;
                 continue;
             }
             std::cout << "ID " << r.passengerId << " | " << r.name
@@ -119,6 +124,25 @@ int main(int argc, char** argv) {
             }
             std::cout << "Total: " << count << std::endl;
         } else if (op == 4) {
+            int minId = 0, maxId = 0;
+            std::cout << "PassengerId minimo: ";
+            std::cin >> minId;
+            std::cout << "PassengerId maximo: ";
+            std::cin >> maxId;
+
+            std::vector<IndexEntry> res;
+            idx.Range(minId, maxId, res);
+            int count = 0;
+            for (const auto& e : res) {
+                PassengerRecord r;
+                if (rm.ReadRecord(e.pageId, (int16_t)e.slot, r)) {
+                    std::cout << "ID " << r.passengerId << " | " << r.name
+                              << " | edad " << r.age << "\n";
+                    count++;
+                }
+            }
+            std::cout << "Total: " << count << std::endl;
+        } else if (op == 5) {
             break;
         } else {
             std::cout << "Opcion invalida." << std::endl;
