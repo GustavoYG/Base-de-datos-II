@@ -19,8 +19,15 @@ struct PassengerRecord {
     char embarked[4];
 };
 
+enum class PageType : int16_t {
+    Data = 0,
+    IndexLeaf = 1,
+    IndexInternal = 2
+};
+
 struct PageHeader {
     int32_t pageId;
+    int16_t pageType;
     int32_t checksum;
     int32_t freeBytes;
 };

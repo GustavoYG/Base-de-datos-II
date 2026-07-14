@@ -125,6 +125,35 @@ bool RecordManager::ReadRecord(int pageId, int slot, PassengerRecord& out) {
     return true;
 }
 
+bool RecordManager::UpdateRecord(int pageId, int slot, const PassengerRecord& r) {
+    const int recordSize = (int)sizeof(PassengerRecord);
+    Page* pagePtr = bp->PinPage(pageId);
+    if (!pagePtr) return false;
+
+    RecordPage* rp = (RecordPage*)pagePtr;
+    const int slotEntrySize = (int)sizeof(SlotEntry);
+
+    if (slot < 0 || slot >= rp->slotCount) { bp->UnpinPage(pageId, false); return false; }
+
+    int slotPos = (int)sizeof(rp->data) - (slot + 1) * slotEntrySize;
+    SlotEntry se;
+    std::memcpy(&se, rp->data + slotPos, slotEntrySize);
+    if (se.length == 0) { bp->UnpinPage(pageId, false); return false; }
+
+    // Actualizacion en sitio: el tamano del registro es fijo
+    std::memcpy(rp->data + se.offset, &r, recordSize);
+    rp->header.checksum = SimpleChecksum(((unsigned char*)rp) + sizeof(PageHeader), PAGE_SIZE - sizeof(PageHeader));
+
+    // WAL: imagen de pagina antes de marcar dirty
+    std::string payload;
+    payload.resize(sizeof(int) + PAGE_SIZE);
+    std::memcpy(&payload[0], &pageId, sizeof(int));
+    std::memcpy(&payload[0] + sizeof(int), (unsigned char*)rp, PAGE_SIZE);
+    AppendWalEntry(walPath, payload);
+
+    return bp->UnpinPage(pageId, true);
+}
+
 bool RecordManager::DeleteRecord(int pageId, int slot) {
     Page* pagePtr = bp->PinPage(pageId);
     if (!pagePtr) return false;
@@ -147,8 +176,8 @@ bool RecordManager::DeleteRecord(int pageId, int slot) {
     std::memcpy(rp->data + slotPos, &freeEntry, slotEntrySize);
     rp->freeSlotHead = (int16_t)slot;
 
-    // update freeBytes (we don't reclaim record area now)
-    rp->header.freeBytes = (int)(sizeof(rp->data) - rp->freeSpaceOffset - rp->slotCount * slotEntrySize) + se.length;
+    // update freeBytes (el area del registro borrado queda libre pero no es contigua al final)
+    rp->header.freeBytes = (int)(sizeof(rp->data) - rp->freeSpaceOffset - rp->slotCount * slotEntrySize);
     rp->header.checksum = SimpleChecksum(((unsigned char*)rp) + sizeof(PageHeader), PAGE_SIZE - sizeof(PageHeader));
 
     // WAL and mark dirty

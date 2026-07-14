@@ -29,6 +29,7 @@ int PageManager::AllocatePage() {
     RecordPage rp;
     std::memset(&rp, 0, sizeof(RecordPage));
     rp.header.pageId = newPageId;
+    rp.header.pageType = (int16_t)PageType::Data;
     rp.slotCount = 0;
     rp.freeSpaceOffset = 0;
     rp.freeSlotHead = -1;
