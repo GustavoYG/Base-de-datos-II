@@ -1,8 +1,15 @@
 #include <cassert>
+#include <fstream>
 #include <vector>
 
 #include "storage/atomic_writer.h"
-#include "storage/file_io.h"
+
+static std::vector<unsigned char> ReadAll(const std::string& path) {
+    std::ifstream in(path.c_str(), std::ios::binary);
+    if (!in) return {};
+    return std::vector<unsigned char>((std::istreambuf_iterator<char>(in)),
+                                       std::istreambuf_iterator<char>());
+}
 
 int main() {
     std::vector<unsigned char> a;
@@ -13,7 +20,7 @@ int main() {
     bool ok = WriteAtomic("test_atomic.bin", a);
     assert(ok);
 
-    std::vector<unsigned char> out = ReadAllBinary("test_atomic.bin");
+    std::vector<unsigned char> out = ReadAll("test_atomic.bin");
     assert(out == a);
 
     return 0;

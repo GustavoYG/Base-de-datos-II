@@ -36,7 +36,6 @@ void BufferPool::TouchFrameLRU(int frameIdx) {
 }
 
 Page* BufferPool::PinPage(int pageId) {
-    std::lock_guard<std::mutex> guard(mu);
     // if present
     auto it = pageTable.find(pageId);
     if (it != pageTable.end()) {
@@ -72,7 +71,6 @@ Page* BufferPool::PinPage(int pageId) {
 }
 
 bool BufferPool::UnpinPage(int pageId, bool isDirty) {
-    std::lock_guard<std::mutex> guard(mu);
     auto it = pageTable.find(pageId);
     if (it == pageTable.end()) return false;
     int idx = it->second;
@@ -88,7 +86,6 @@ bool BufferPool::UnpinPage(int pageId, bool isDirty) {
 }
 
 void BufferPool::FlushAll() {
-    std::lock_guard<std::mutex> guard(mu);
     for (int i = 0; i < capacity; ++i) {
         if (frames[i].pageId != -1 && frames[i].dirty) {
             pm.WritePage(frames[i].pageId, frames[i].page);

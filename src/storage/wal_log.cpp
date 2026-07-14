@@ -3,34 +3,12 @@
 #include <cstdio>
 #include <vector>
 
-#ifdef _WIN32
-#include <io.h>
-#else
-#include <unistd.h>
-#endif
+#include "common/utils.h"
 
 struct WalHeader {
     unsigned int size;
     unsigned int checksum;
 };
-
-static unsigned int WalChecksum(const unsigned char* data, unsigned int len) {
-    unsigned int sum = 0;
-    for (unsigned int i = 0; i < len; ++i) sum += data[i];
-    return sum;
-}
-
-static bool ForceFsync(FILE* fp) {
-    if (!fp) return false;
-    std::fflush(fp);
-#ifdef _WIN32
-    int fd = _fileno(fp);
-    return _commit(fd) == 0;
-#else
-    int fd = fileno(fp);
-    return fsync(fd) == 0;
-#endif
-}
 
 bool AppendWalEntry(const std::string& path, const std::string& payload) {
     FILE* fp = std::fopen(path.c_str(), "ab");
@@ -38,7 +16,7 @@ bool AppendWalEntry(const std::string& path, const std::string& payload) {
 
     WalHeader h;
     h.size = (unsigned int)payload.size();
-    h.checksum = WalChecksum((const unsigned char*)payload.data(), h.size);
+    h.checksum = (unsigned int)SimpleChecksum((const unsigned char*)payload.data(), (int)h.size);
 
     size_t wh = std::fwrite(&h, 1, sizeof(WalHeader), fp);
     if (wh != sizeof(WalHeader)) {
@@ -79,7 +57,7 @@ std::string ReadLastValidWalPayload(const std::string& path) {
         size_t rd = std::fread(buf.data(), 1, h.size, fp);
         if (rd != h.size) break;
 
-        unsigned int chk = WalChecksum(buf.data(), h.size);
+        unsigned int chk = (unsigned int)SimpleChecksum(buf.data(), (int)h.size);
         if (chk != h.checksum) break;
 
         last.assign((const char*)buf.data(), (size_t)h.size);

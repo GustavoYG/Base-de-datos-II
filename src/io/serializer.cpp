@@ -47,15 +47,6 @@ std::vector<PassengerRecord> RowsToRecords(const std::vector<std::vector<std::st
     return out;
 }
 
-std::vector<unsigned char> SerializeRecords(const std::vector<PassengerRecord>& records) {
-    std::vector<unsigned char> out;
-    if (records.empty()) return out;
-
-    out.resize(records.size() * sizeof(PassengerRecord));
-    std::memcpy(out.data(), records.data(), out.size());
-    return out;
-}
-
 static std::string CleanField(const std::string& s) {
     std::string out;
     for (size_t i = 0; i < s.size(); ++i) {

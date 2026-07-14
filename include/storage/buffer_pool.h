@@ -4,7 +4,6 @@
 #include <cstring>
 #include <unordered_map>
 #include <list>
-#include <mutex>
 #include "common/types.h"
 #include "storage/page_manager.h"
 
@@ -34,7 +33,6 @@ private:
     std::vector<Frame> frames;
     std::unordered_map<int, int> pageTable; // pageId -> frame index
     std::list<int> lru; // stores frame indices, front = most recent, back = least recent
-    std::mutex mu;
 
     int FindVictim();
     void TouchFrameLRU(int frameIdx);

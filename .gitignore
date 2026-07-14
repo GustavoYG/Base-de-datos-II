@@ -8,3 +8,5 @@ tools/*.exe
 
 # Ignore markdown reports and notes
 *.md
+
+openconde.json
