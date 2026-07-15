@@ -5,11 +5,12 @@
 #include "common/utils.h"
 #include "storage/wal_log.h"
 
-RecordManager::RecordManager(const std::string& path, ReplacementPolicy policy) : pm(path), bp(nullptr), currentPageId(-1) {
+RecordManager::RecordManager(const std::string& path, const Schema& schema, ReplacementPolicy policy)
+    : pm(path), schema(schema), bp(nullptr), currentPageId(-1) {
     walPath = path + ".wal";
     bp = new BufferPool(pm, 16, policy);
 
-    // simple recovery: read last valid wal entry and apply to page
+    // Recuperacion simple: re-aplica la ultima imagen de pagina valida del WAL.
     std::string payload = ReadLastValidWalPayload(walPath);
     if (!payload.empty()) {
         if (payload.size() >= sizeof(int) + PAGE_SIZE) {
@@ -22,8 +23,17 @@ RecordManager::RecordManager(const std::string& path, ReplacementPolicy policy) 
     }
 }
 
-bool RecordManager::InsertRecord(const PassengerRecord& r, int& outPageId, int& outSlot) {
-    const int recordSize = (int)sizeof(PassengerRecord);
+RecordManager::~RecordManager() {
+    // Vuelca las paginas sucias antes de soltar el buffer (antes se filtraba
+    // y se perdia la ultima pagina modificada no evictada).
+    if (bp) {
+        bp->FlushAll();
+        delete bp;
+    }
+}
+
+bool RecordManager::InsertRecord(const std::vector<unsigned char>& row, int& outPageId, int& outSlot) {
+    const int recordSize = schema.rowSize;
     const int slotEntrySize = (int)sizeof(SlotEntry);
 
     while (true) {
@@ -54,23 +64,23 @@ bool RecordManager::InsertRecord(const PassengerRecord& r, int& outPageId, int& 
             continue;
         }
 
-        // try to reuse a free slot from freelist
+        // Reusar un slot libre de la freelist, si lo hay.
         int reuseSlot = -1;
         if (rp->freeSlotHead >= 0) {
             reuseSlot = rp->freeSlotHead;
             int slotPos = (int)sizeof(rp->data) - (reuseSlot + 1) * slotEntrySize;
             SlotEntry freeSe;
             std::memcpy(&freeSe, rp->data + slotPos, slotEntrySize);
-            // next free stored in offset field of the free slot
+            // El siguiente libre queda en el campo offset del slot borrado.
             rp->freeSlotHead = freeSe.offset;
         }
 
-        // write record at freeSpaceOffset
+        // Escribir la fila (bytes crudos) en freeSpaceOffset.
         int recordOffset = rp->freeSpaceOffset;
-        std::memcpy(rp->data + recordOffset, &r, recordSize);
+        std::memcpy(rp->data + recordOffset, row.data(), recordSize);
         rp->freeSpaceOffset += recordSize;
 
-        // build slot entry and write it at the end (grow backward)
+        // Construir la entrada de slot y crecer el directorio hacia atras.
         SlotEntry se;
         se.offset = (int16_t)recordOffset;
         se.length = (int16_t)recordSize;
@@ -89,14 +99,13 @@ bool RecordManager::InsertRecord(const PassengerRecord& r, int& outPageId, int& 
         rp->header.freeBytes = (int)(sizeof(rp->data) - rp->freeSpaceOffset - rp->slotCount * slotEntrySize);
         rp->header.checksum = SimpleChecksum(((unsigned char*)rp) + sizeof(PageHeader), PAGE_SIZE - sizeof(PageHeader));
 
-        // WAL: write page image to WAL before marking page dirty
+        // WAL: imagen de pagina antes de marcar dirty.
         std::string payload;
         payload.resize(sizeof(int) + PAGE_SIZE);
         std::memcpy(&payload[0], &currentPageId, sizeof(int));
         std::memcpy(&payload[0] + sizeof(int), (unsigned char*)rp, PAGE_SIZE);
         AppendWalEntry(walPath, payload);
 
-        // unpin and mark dirty
         if (!bp->UnpinPage(currentPageId, true)) return false;
 
         outPageId = currentPageId;
@@ -104,7 +113,7 @@ bool RecordManager::InsertRecord(const PassengerRecord& r, int& outPageId, int& 
     }
 }
 
-bool RecordManager::ReadRecord(int pageId, int slot, PassengerRecord& out) {
+bool RecordManager::ReadRecord(int pageId, int slot, std::vector<unsigned char>& outRow) {
     Page* pagePtr = bp->PinPage(pageId);
     if (!pagePtr) return false;
 
@@ -120,13 +129,14 @@ bool RecordManager::ReadRecord(int pageId, int slot, PassengerRecord& out) {
 
     if (se.offset < 0 || se.offset + se.length > (int)sizeof(rp->data)) { bp->UnpinPage(pageId, false); return false; }
 
-    std::memcpy(&out, rp->data + se.offset, sizeof(PassengerRecord));
+    outRow.resize(se.length);
+    std::memcpy(outRow.data(), rp->data + se.offset, se.length);
     bp->UnpinPage(pageId, false);
     return true;
 }
 
-bool RecordManager::UpdateRecord(int pageId, int slot, const PassengerRecord& r) {
-    const int recordSize = (int)sizeof(PassengerRecord);
+bool RecordManager::UpdateRecord(int pageId, int slot, const std::vector<unsigned char>& row) {
+    const int recordSize = schema.rowSize;
     Page* pagePtr = bp->PinPage(pageId);
     if (!pagePtr) return false;
 
@@ -140,11 +150,10 @@ bool RecordManager::UpdateRecord(int pageId, int slot, const PassengerRecord& r)
     std::memcpy(&se, rp->data + slotPos, slotEntrySize);
     if (se.length == 0) { bp->UnpinPage(pageId, false); return false; }
 
-    // Actualizacion en sitio: el tamano del registro es fijo
-    std::memcpy(rp->data + se.offset, &r, recordSize);
+    // Actualizacion en sitio: el ancho de la fila es fijo.
+    std::memcpy(rp->data + se.offset, row.data(), recordSize);
     rp->header.checksum = SimpleChecksum(((unsigned char*)rp) + sizeof(PageHeader), PAGE_SIZE - sizeof(PageHeader));
 
-    // WAL: imagen de pagina antes de marcar dirty
     std::string payload;
     payload.resize(sizeof(int) + PAGE_SIZE);
     std::memcpy(&payload[0], &pageId, sizeof(int));
@@ -167,20 +176,18 @@ bool RecordManager::DeleteRecord(int pageId, int slot) {
     SlotEntry se;
     std::memcpy(&se, rp->data + slotPos, slotEntrySize);
 
-    if (se.length == 0) { bp->UnpinPage(pageId, false); return false; } // already deleted
+    if (se.length == 0) { bp->UnpinPage(pageId, false); return false; } // ya borrado
 
-    // link this slot into freelist: store current head in offset, set length=0
+    // Enlazar este slot a la freelist: guardar la cabeza actual en offset, length=0.
     SlotEntry freeEntry;
     freeEntry.offset = rp->freeSlotHead;
     freeEntry.length = 0;
     std::memcpy(rp->data + slotPos, &freeEntry, slotEntrySize);
     rp->freeSlotHead = (int16_t)slot;
 
-    // update freeBytes (el area del registro borrado queda libre pero no es contigua al final)
     rp->header.freeBytes = (int)(sizeof(rp->data) - rp->freeSpaceOffset - rp->slotCount * slotEntrySize);
     rp->header.checksum = SimpleChecksum(((unsigned char*)rp) + sizeof(PageHeader), PAGE_SIZE - sizeof(PageHeader));
 
-    // WAL and mark dirty
     std::string payload;
     payload.resize(sizeof(int) + PAGE_SIZE);
     std::memcpy(&payload[0], &pageId, sizeof(int));

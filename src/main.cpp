@@ -3,9 +3,10 @@
 #include <string>
 #include <vector>
 
+#include "common/schema.h"
 #include "io/csv_reader.h"
 #include "io/serializer.h"
-#include "storage/record_manager.h"
+#include "storage/table.h"
 #include "index/bplus_tree.h"
 
 static ReplacementPolicy ParsePolicy(int argc, char** argv) {
@@ -21,8 +22,29 @@ static ReplacementPolicy ParsePolicy(int argc, char** argv) {
     return ReplacementPolicy::LRU;
 }
 
+// Esquema de la tabla (antes era el struct PassengerRecord hardcodeado). Ahora
+// es datos: cualquier CSV se describe asi y el storage opera sobre bytes.
+static Schema BuildTitanicSchema() {
+    Schema s;
+    s.AddColumn("passengerId", ColumnType::INT32);
+    s.AddColumn("survived", ColumnType::INT32);
+    s.AddColumn("pclass", ColumnType::INT32);
+    s.AddColumn("name", ColumnType::STRING, 64);
+    s.AddColumn("sex", ColumnType::STRING, 8);
+    s.AddColumn("age", ColumnType::FLOAT);
+    s.AddColumn("sibSp", ColumnType::INT32);
+    s.AddColumn("parch", ColumnType::INT32);
+    s.AddColumn("ticket", ColumnType::STRING, 32);
+    s.AddColumn("fare", ColumnType::FLOAT);
+    s.AddColumn("cabin", ColumnType::STRING, 16);
+    s.AddColumn("embarked", ColumnType::STRING, 4);
+    s.Finalize();
+    return s;
+}
+
 int main(int argc, char** argv) {
     ReplacementPolicy policy = ParsePolicy(argc, argv);
+    const Schema schema = BuildTitanicSchema();
 
     std::vector<std::vector<std::string>> rows = CsvReader::ReadAll("data/raw/titanic.csv");
     if (rows.empty()) {
@@ -33,33 +55,45 @@ int main(int argc, char** argv) {
         return 1;
     }
 
-    std::vector<PassengerRecord> csvRecords = RowsToRecords(rows);
-    if (csvRecords.empty()) {
-        std::cout << "No hay registros validos." << std::endl;
-        return 1;
-    }
-
-    // Almacenamiento: datos en un heap file (RecordManager) y su indice primario
-    // en un B+ Tree sobre su propio archivo. Se limpian los archivos previos para
-    // no acumular inserciones en cada ejecucion.
-    const std::string binPath = "data/storage/tables/titanic.bin";
-    const std::string idxPath = "data/storage/tables/titanic_idx.bin";
+    // Almacenamiento: tabla en heap file + indice primario B+ Tree sobre
+    // passengerId. Se limpian los archivos previos para no acumular inserciones.
+    const std::string baseDir = "data/storage/tables";
+    const std::string binPath = baseDir + "/titanic.bin";
+    const std::string idxPath = baseDir + "/titanic_idx.bin";
     std::remove(binPath.c_str());
     std::remove((binPath + ".wal").c_str());
     std::remove(idxPath.c_str());
     std::remove((idxPath + ".meta").c_str());
 
-    RecordManager rm(binPath, policy);
-    BPlusTree idx(idxPath, policy);
+    Table table("titanic", schema, baseDir, policy);
+    BPlusTree idx(idxPath, ColumnType::INT32, policy); // indice sobre clave entera
 
-    std::vector<PassengerRecord> records; // cache para seleccion por atributos no indexados
-    records.reserve(csvRecords.size());
-    for (const auto& r : csvRecords) {
+    // Cache en memoria para seleccion por atributos no indexados (edad/survived).
+    // En la fase de operadores relacionales esto se reemplaza por scans sobre el storage.
+    std::vector<std::vector<unsigned char>> rowsCache;
+    rowsCache.reserve(rows.size());
+
+    for (size_t i = 1; i < rows.size(); ++i) { // salta encabezado
+        if (rows[i].size() < 12) continue;
+        std::vector<unsigned char> bytes = RowToBytes(schema, rows[i]);
+
         int pid = 0, slot = 0;
-        rm.InsertRecord(r, pid, slot);
-        idx.Insert(r.passengerId, pid, (int16_t)slot);
-        records.push_back(r);
+        if (!table.InsertRow(bytes, pid, slot)) continue;
+
+        int32_t id = GetFieldInt32(schema, bytes, "passengerId");
+        BTreeKey key;
+        BTreeKeyFromInt32(key, id);
+        idx.Insert(key, pid, (int16_t)slot);
+
+        rowsCache.push_back(std::move(bytes));
     }
+
+    auto PrintRow = [&](const std::vector<unsigned char>& r) {
+        std::cout << "ID " << GetFieldInt32(schema, r, "passengerId")
+                  << " | " << GetFieldString(schema, r, "name")
+                  << " | edad " << GetFieldFloat(schema, r, "age")
+                  << " | survived " << GetFieldInt32(schema, r, "survived") << "\n";
+    };
 
     const char* policyName = (policy == ReplacementPolicy::CLOCK) ? "CLOCK" : "LRU";
 
@@ -80,45 +114,42 @@ int main(int argc, char** argv) {
             std::cout << "PassengerId: ";
             std::cin >> id;
 
+            BTreeKey key;
+            BTreeKeyFromInt32(key, id);
             int pid = 0;
             int16_t slot = 0;
-            if (!idx.Find(id, pid, slot)) {
+            if (!idx.Find(key, pid, slot)) {
                 std::cout << "No encontrado." << std::endl;
                 continue;
             }
 
-            PassengerRecord r;
-            if (!rm.ReadRecord(pid, slot, r)) {
+            std::vector<unsigned char> r;
+            if (!table.ReadRow(pid, slot, r)) {
                 std::cout << "Error de lectura en pagina " << pid << " slot " << slot << "." << std::endl;
                 continue;
             }
-            std::cout << "ID " << r.passengerId << " | " << r.name
-                      << " | edad " << r.age << " | survived " << r.survived << std::endl;
+            PrintRow(r);
         } else if (op == 2) {
-            float minAge = 0.0f;
-            float maxAge = 0.0f;
+            float minAge = 0.0f, maxAge = 0.0f;
             std::cout << "Edad minima: ";
             std::cin >> minAge;
             std::cout << "Edad maxima: ";
             std::cin >> maxAge;
 
             int count = 0;
-            for (size_t i = 0; i < records.size(); ++i) {
-                const PassengerRecord& r = records[i];
-                if (r.age >= minAge && r.age <= maxAge) {
-                    std::cout << "ID " << r.passengerId << " | " << r.name
-                              << " | edad " << r.age << "\n";
+            for (const auto& r : rowsCache) {
+                float age = GetFieldFloat(schema, r, "age");
+                if (age >= minAge && age <= maxAge) {
+                    PrintRow(r);
                     count++;
                 }
             }
             std::cout << "Total: " << count << std::endl;
         } else if (op == 3) {
             int count = 0;
-            for (size_t i = 0; i < records.size(); ++i) {
-                const PassengerRecord& r = records[i];
-                if (r.survived == 1) {
-                    std::cout << "ID " << r.passengerId << " | " << r.name
-                              << " | edad " << r.age << "\n";
+            for (const auto& r : rowsCache) {
+                if (GetFieldInt32(schema, r, "survived") == 1) {
+                    PrintRow(r);
                     count++;
                 }
             }
@@ -130,14 +161,17 @@ int main(int argc, char** argv) {
             std::cout << "PassengerId maximo: ";
             std::cin >> maxId;
 
+            BTreeKey minKey, maxKey;
+            BTreeKeyFromInt32(minKey, minId);
+            BTreeKeyFromInt32(maxKey, maxId);
+
             std::vector<IndexEntry> res;
-            idx.Range(minId, maxId, res);
+            idx.Range(minKey, maxKey, res);
             int count = 0;
             for (const auto& e : res) {
-                PassengerRecord r;
-                if (rm.ReadRecord(e.pageId, (int16_t)e.slot, r)) {
-                    std::cout << "ID " << r.passengerId << " | " << r.name
-                              << " | edad " << r.age << "\n";
+                std::vector<unsigned char> r;
+                if (table.ReadRow(e.pageId, (int16_t)e.slot, r)) {
+                    PrintRow(r);
                     count++;
                 }
             }

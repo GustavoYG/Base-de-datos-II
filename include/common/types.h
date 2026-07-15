@@ -4,19 +4,12 @@
 
 const int PAGE_SIZE = 4096;
 
-struct PassengerRecord {
-    int32_t passengerId;
-    int32_t survived;
-    int32_t pclass;
-    char name[64];
-    char sex[8];
-    float age;
-    int32_t sibSp;
-    int32_t parch;
-    char ticket[32];
-    float fare;
-    char cabin[16];
-    char embarked[4];
+// Largo fijo de una clave de indice. Cualquier columna indizada se codifica en
+// un BTreeKey de este tamano (entero/flotante ocupan 4 B, texto se rellena).
+const int BTREE_KEY_SIZE = 64;
+
+struct BTreeKey {
+    unsigned char data[BTREE_KEY_SIZE];
 };
 
 enum class PageType : int16_t {
@@ -51,7 +44,7 @@ struct RecordPage {
 };
 
 struct IndexEntry {
-    int32_t key;
+    BTreeKey key;
     int32_t pageId;
     int32_t slot;
 };

@@ -3,8 +3,49 @@
 #include <fstream>
 #include <cstring>
 
-BPlusTree::BPlusTree(const std::string& indexPath, ReplacementPolicy policy)
-    : pm(indexPath), bp(pm, 16, policy), metaPath(indexPath + ".meta"), rootPageId(-1) {
+// ---- Codificacion y comparacion de claves genericas ----
+
+void BTreeKeyFromInt32(BTreeKey& k, int32_t v) {
+    std::memset(k.data, 0, BTREE_KEY_SIZE);
+    std::memcpy(k.data, &v, sizeof(int32_t));
+}
+
+void BTreeKeyFromFloat(BTreeKey& k, float v) {
+    std::memset(k.data, 0, BTREE_KEY_SIZE);
+    std::memcpy(k.data, &v, sizeof(float));
+}
+
+void BTreeKeyFromString(BTreeKey& k, const std::string& s, int len) {
+    std::memset(k.data, 0, BTREE_KEY_SIZE);
+    int n = (int)s.size();
+    if (n > BTREE_KEY_SIZE) n = BTREE_KEY_SIZE;
+    if (len > 0 && len < n) n = len;
+    std::memcpy(k.data, s.data(), n);
+}
+
+int CompareBTreeKeys(const BTreeKey& a, const BTreeKey& b, ColumnType t) {
+    if (t == ColumnType::INT32 || t == ColumnType::BOOL) {
+        int32_t x = 0, y = 0;
+        std::memcpy(&x, a.data, sizeof(int32_t));
+        std::memcpy(&y, b.data, sizeof(int32_t));
+        return (x < y) ? -1 : (x > y ? 1 : 0);
+    }
+    if (t == ColumnType::FLOAT) {
+        float x = 0.0f, y = 0.0f;
+        std::memcpy(&x, a.data, sizeof(float));
+        std::memcpy(&y, b.data, sizeof(float));
+        return (x < y) ? -1 : (x > y ? 1 : 0);
+    }
+    // STRING: largo fijo relleno con ceros -> memcmp da el orden lexicografico.
+    int c = std::memcmp(a.data, b.data, BTREE_KEY_SIZE);
+    return (c < 0) ? -1 : (c > 0 ? 1 : 0);
+}
+
+// ---- B+ Tree ----
+
+BPlusTree::BPlusTree(const std::string& indexPath, ColumnType keyType_, ReplacementPolicy policy)
+    : pm(indexPath), bp(pm, 16, policy), metaPath(indexPath + ".meta"),
+      rootPageId(-1), keyType(keyType_) {
     LoadMeta();
 }
 
@@ -33,13 +74,13 @@ void BPlusTree::SetParent(int childPageId, int parentPageId) {
     bp.UnpinPage(childPageId, true);
 }
 
-void BPlusTree::Insert(int32_t key, int32_t recPage, int16_t recSlot) {
+void BPlusTree::Insert(const BTreeKey& key, int32_t recPage, int16_t recSlot) {
     if (rootPageId < 0) {
         rootPageId = AllocNode(true);
         SaveMeta();
     }
 
-    int32_t promotedKey = 0;
+    BTreeKey promotedKey;
     int newRight = -1;
     bool split = InsertRecursive(rootPageId, key, recPage, recSlot, promotedKey, newRight);
 
@@ -52,7 +93,7 @@ void BPlusTree::Insert(int32_t key, int32_t recPage, int16_t recSlot) {
         rh->keyCount = 1;
         re[0].key = promotedKey;
         re[0].child = rootPageId; // primer hijo = raiz vieja
-        re[1].key = 0;
+        re[1].key = BTreeKey();
         re[1].child = newRight;   // segundo hijo = nueva hoja/interior derecho
         re[1].slot = 0;
         bp.UnpinPage(newRoot, true);
@@ -65,16 +106,16 @@ void BPlusTree::Insert(int32_t key, int32_t recPage, int16_t recSlot) {
     }
 }
 
-bool BPlusTree::InsertRecursive(int pageId, int32_t key, int32_t recPage, int16_t recSlot,
-                                int32_t& promotedKey, int& newRightPageId) {
+bool BPlusTree::InsertRecursive(int pageId, const BTreeKey& key, int32_t recPage, int16_t recSlot,
+                                BTreeKey& promotedKey, int& newRightPageId) {
     Page* p = bp.PinPage(pageId);
     BTreeNodeHeader* h = NodeHeader(p);
     BTreeEntry* e = NodeEntries(p);
 
     if (h->isLeaf) {
-        // Clave duplicada: ignorar (indice unico sobre passengerId).
+        // Clave duplicada: ignorar (indice unico).
         for (int i = 0; i < h->keyCount; ++i) {
-            if (e[i].key == key) {
+            if (CompareBTreeKeys(e[i].key, key, keyType) == 0) {
                 bp.UnpinPage(pageId, false);
                 return false;
             }
@@ -82,7 +123,7 @@ bool BPlusTree::InsertRecursive(int pageId, int32_t key, int32_t recPage, int16_
         // Insertar en orden ascendente de clave.
         int pos = h->keyCount;
         for (int i = 0; i < h->keyCount; ++i) {
-            if (key < e[i].key) { pos = i; break; }
+            if (CompareBTreeKeys(key, e[i].key, keyType) < 0) { pos = i; break; }
         }
         for (int i = h->keyCount; i > pos; --i) e[i] = e[i - 1];
         e[pos].key = key;
@@ -101,11 +142,11 @@ bool BPlusTree::InsertRecursive(int pageId, int32_t key, int32_t recPage, int16_
     // Nodo interno: descender al hijo adecuado.
     int childPos = h->keyCount;
     for (int i = 0; i < h->keyCount; ++i) {
-        if (key < e[i].key) { childPos = i; break; }
+        if (CompareBTreeKeys(key, e[i].key, keyType) < 0) { childPos = i; break; }
     }
     int childId = e[childPos].child;
 
-    int32_t childPromotedKey = 0;
+    BTreeKey childPromotedKey;
     int childNewRight = -1;
     bool childSplit = InsertRecursive(childId, key, recPage, recSlot, childPromotedKey, childNewRight);
     if (!childSplit) {
@@ -116,7 +157,7 @@ bool BPlusTree::InsertRecursive(int pageId, int32_t key, int32_t recPage, int16_
     // Insertar el separador promovido y el nuevo hijo derecho en este interno.
     int pos = h->keyCount;
     for (int i = 0; i < h->keyCount; ++i) {
-        if (childPromotedKey < e[i].key) { pos = i; break; }
+        if (CompareBTreeKeys(childPromotedKey, e[i].key, keyType) < 0) { pos = i; break; }
     }
     // Abrir hueco: desplazar hijos y claves una posicion a la derecha desde pos.
     for (int i = h->keyCount; i > pos; --i) e[i].child = e[i - 1].child;
@@ -136,7 +177,7 @@ bool BPlusTree::InsertRecursive(int pageId, int32_t key, int32_t recPage, int16_
     return split;
 }
 
-bool BPlusTree::SplitLeaf(int pageId, Page* p, int32_t& promotedKey, int& newRightPageId) {
+bool BPlusTree::SplitLeaf(int pageId, Page* p, BTreeKey& promotedKey, int& newRightPageId) {
     BTreeNodeHeader* h = NodeHeader(p);
     BTreeEntry* e = NodeEntries(p);
     int total = h->keyCount;
@@ -162,7 +203,7 @@ bool BPlusTree::SplitLeaf(int pageId, Page* p, int32_t& promotedKey, int& newRig
     return true;
 }
 
-bool BPlusTree::SplitInternal(int pageId, Page* p, int32_t& promotedKey, int& newRightPageId) {
+bool BPlusTree::SplitInternal(int pageId, Page* p, BTreeKey& promotedKey, int& newRightPageId) {
     BTreeNodeHeader* h = NodeHeader(p);
     BTreeEntry* e = NodeEntries(p);
     int total = h->keyCount;
@@ -178,7 +219,7 @@ bool BPlusTree::SplitInternal(int pageId, Page* p, int32_t& promotedKey, int& ne
         re[i].child = e[mid + 1 + i].child;
         re[i].slot = 0;
     }
-    re[rightKeyCount].key = 0;
+    re[rightKeyCount].key = BTreeKey();
     re[rightKeyCount].child = e[total].child; // ultimo hijo pasa a la derecha
     re[rightKeyCount].slot = 0;
     rh->keyCount = rightKeyCount;
@@ -195,7 +236,7 @@ bool BPlusTree::SplitInternal(int pageId, Page* p, int32_t& promotedKey, int& ne
     return true;
 }
 
-bool BPlusTree::Find(int32_t key, int32_t& outPageId, int16_t& outSlot) {
+bool BPlusTree::Find(const BTreeKey& key, int32_t& outPageId, int16_t& outSlot) {
     if (rootPageId < 0) return false;
 
     int pageId = rootPageId;
@@ -206,7 +247,7 @@ bool BPlusTree::Find(int32_t key, int32_t& outPageId, int16_t& outSlot) {
 
         if (h->isLeaf) {
             for (int i = 0; i < h->keyCount; ++i) {
-                if (e[i].key == key) {
+                if (CompareBTreeKeys(e[i].key, key, keyType) == 0) {
                     outPageId = e[i].child;
                     outSlot = (int16_t)e[i].slot;
                     bp.UnpinPage(pageId, false);
@@ -219,7 +260,7 @@ bool BPlusTree::Find(int32_t key, int32_t& outPageId, int16_t& outSlot) {
 
         int childPos = h->keyCount;
         for (int i = 0; i < h->keyCount; ++i) {
-            if (key < e[i].key) { childPos = i; break; }
+            if (CompareBTreeKeys(key, e[i].key, keyType) < 0) { childPos = i; break; }
         }
         int childId = e[childPos].child;
         bp.UnpinPage(pageId, false);
@@ -227,7 +268,7 @@ bool BPlusTree::Find(int32_t key, int32_t& outPageId, int16_t& outSlot) {
     }
 }
 
-void BPlusTree::Range(int32_t minKey, int32_t maxKey, std::vector<IndexEntry>& out) {
+void BPlusTree::Range(const BTreeKey& minKey, const BTreeKey& maxKey, std::vector<IndexEntry>& out) {
     out.clear();
     if (rootPageId < 0) return;
 
@@ -240,7 +281,7 @@ void BPlusTree::Range(int32_t minKey, int32_t maxKey, std::vector<IndexEntry>& o
         BTreeEntry* e = NodeEntries(p);
         int childPos = h->keyCount;
         for (int i = 0; i < h->keyCount; ++i) {
-            if (minKey < e[i].key) { childPos = i; break; }
+            if (CompareBTreeKeys(minKey, e[i].key, keyType) < 0) { childPos = i; break; }
         }
         int childId = e[childPos].child;
         bp.UnpinPage(pageId, false);
@@ -253,11 +294,11 @@ void BPlusTree::Range(int32_t minKey, int32_t maxKey, std::vector<IndexEntry>& o
         BTreeNodeHeader* h = NodeHeader(p);
         BTreeEntry* e = NodeEntries(p);
         for (int i = 0; i < h->keyCount; ++i) {
-            if (e[i].key > maxKey) {
+            if (CompareBTreeKeys(e[i].key, maxKey, keyType) > 0) {
                 bp.UnpinPage(pageId, false);
                 return;
             }
-            if (e[i].key >= minKey) {
+            if (CompareBTreeKeys(e[i].key, minKey, keyType) >= 0) {
                 IndexEntry ie;
                 ie.key = e[i].key;
                 ie.pageId = e[i].child;
@@ -273,13 +314,20 @@ void BPlusTree::Range(int32_t minKey, int32_t maxKey, std::vector<IndexEntry>& o
 
 void BPlusTree::SaveMeta() {
     std::ofstream f(metaPath, std::ios::binary | std::ios::trunc);
-    if (f) f.write((char*)&rootPageId, sizeof(int));
+    if (f) {
+        int16_t kt = (int16_t)keyType;
+        f.write((char*)&kt, sizeof(int16_t));
+        f.write((char*)&rootPageId, sizeof(int));
+    }
 }
 
 void BPlusTree::LoadMeta() {
     std::ifstream f(metaPath, std::ios::binary);
-    if (f && f.read((char*)&rootPageId, sizeof(int))) {
-        // meta valido: reusar el arbol existente en disco
+    int16_t kt = 0;
+    int rid = -1;
+    if (f && f.read((char*)&kt, sizeof(int16_t)) && f.read((char*)&rid, sizeof(int))) {
+        keyType = (ColumnType)kt; // el tipo persistido prevalece sobre el parametro
+        rootPageId = rid;
     } else {
         rootPageId = -1;
     }

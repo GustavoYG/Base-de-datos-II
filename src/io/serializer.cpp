@@ -1,136 +1,51 @@
 #include "io/serializer.h"
 
 #include <cstring>
-#include <fstream>
-#include <sstream>
+#include <cstdlib>
 
 #include "common/utils.h"
 
-static float ToFloatOrZero(const std::string& s) {
-    if (s.empty()) return 0.0f;
-    return static_cast<float>(std::atof(s.c_str()));
-}
-
-PassengerRecord RowToRecord(const std::vector<std::string>& row) {
-    PassengerRecord r;
-    std::memset(&r, 0, sizeof(PassengerRecord));
-
-    r.passengerId = std::atoi(row[0].c_str());
-    r.survived = std::atoi(row[1].c_str());
-    r.pclass = std::atoi(row[2].c_str());
-
-    SafeCopy(r.name, sizeof(r.name), row[3]);
-    SafeCopy(r.sex, sizeof(r.sex), row[4]);
-
-    r.age = ToFloatOrZero(row[5]);
-    r.sibSp = std::atoi(row[6].c_str());
-    r.parch = std::atoi(row[7].c_str());
-
-    SafeCopy(r.ticket, sizeof(r.ticket), row[8]);
-    r.fare = ToFloatOrZero(row[9]);
-
-    SafeCopy(r.cabin, sizeof(r.cabin), row[10]);
-    SafeCopy(r.embarked, sizeof(r.embarked), row[11]);
-
-    return r;
-}
-
-std::vector<PassengerRecord> RowsToRecords(const std::vector<std::vector<std::string>>& rows) {
-    std::vector<PassengerRecord> out;
-    if (rows.size() <= 1) return out;
-
-    // Salta encabezado
-    for (size_t i = 1; i < rows.size(); ++i) {
-        if (rows[i].size() < 12) continue;
-        out.push_back(RowToRecord(rows[i]));
-    }
-    return out;
-}
-
-static std::string CleanField(const std::string& s) {
-    std::string out;
-    for (size_t i = 0; i < s.size(); ++i) {
-        char c = s[i];
-        if (c == '|') out.push_back('/');
-        else out.push_back(c);
-    }
-    return out;
-}
-
-static std::string ToStringField(const char* s) {
-    if (!s) return "";
-    return CleanField(std::string(s));
-}
-
-std::string SerializeRecordsText(const std::vector<PassengerRecord>& records) {
-    std::ostringstream out;
-    out << "PassengerId|Survived|Pclass|Name|Sex|Age|SibSp|Parch|Ticket|Fare|Cabin|Embarked";
-    out << "\n";
-
-    for (size_t i = 0; i < records.size(); ++i) {
-        const PassengerRecord& r = records[i];
-        out << r.passengerId << "|" << r.survived << "|" << r.pclass << "|";
-        out << ToStringField(r.name) << "|" << ToStringField(r.sex) << "|";
-        out << r.age << "|" << r.sibSp << "|" << r.parch << "|";
-        out << ToStringField(r.ticket) << "|" << r.fare << "|";
-        out << ToStringField(r.cabin) << "|" << ToStringField(r.embarked);
-        out << "\n";
-    }
-
-    return out.str();
-}
-
-static std::vector<std::string> SplitTextLine(const std::string& line) {
-    std::vector<std::string> out;
-    std::string cur;
-    for (size_t i = 0; i < line.size(); ++i) {
-        char c = line[i];
-        if (c == '|') {
-            out.push_back(cur);
-            cur.clear();
-        } else {
-            cur.push_back(c);
+std::vector<unsigned char> RowToBytes(const Schema& schema, const std::vector<std::string>& row) {
+    std::vector<unsigned char> out(schema.rowSize, 0);
+    for (size_t i = 0; i < schema.columns.size(); ++i) {
+        const ColumnDef& c = schema.columns[i];
+        const std::string val = (i < row.size()) ? row[i] : std::string();
+        unsigned char* p = out.data() + c.offset;
+        if (c.type == ColumnType::INT32 || c.type == ColumnType::BOOL) {
+            int32_t v = std::atoi(val.c_str());
+            std::memcpy(p, &v, sizeof(int32_t));
+        } else if (c.type == ColumnType::FLOAT) {
+            float v = (float)std::atof(val.c_str());
+            std::memcpy(p, &v, sizeof(float));
+        } else if (c.type == ColumnType::STRING) {
+            SafeCopy((char*)p, c.length, val);
         }
     }
-    out.push_back(cur);
     return out;
 }
 
-std::vector<PassengerRecord> LoadRecordsText(const std::string& path) {
-    std::ifstream in(path.c_str());
-    std::vector<PassengerRecord> records;
-    if (!in) return records;
+int32_t GetFieldInt32(const Schema& schema, const std::vector<unsigned char>& row, const std::string& col) {
+    int idx = schema.GetColumnIndex(col);
+    if (idx < 0) return 0;
+    int32_t v = 0;
+    std::memcpy(&v, row.data() + schema.columns[idx].offset, sizeof(int32_t));
+    return v;
+}
 
-    std::string line;
-    bool first = true;
-    while (std::getline(in, line)) {
-        if (line.empty()) continue;
-        if (first) {
-            first = false;
-            continue;
-        }
+float GetFieldFloat(const Schema& schema, const std::vector<unsigned char>& row, const std::string& col) {
+    int idx = schema.GetColumnIndex(col);
+    if (idx < 0) return 0.0f;
+    float v = 0.0f;
+    std::memcpy(&v, row.data() + schema.columns[idx].offset, sizeof(float));
+    return v;
+}
 
-        std::vector<std::string> row = SplitTextLine(line);
-        if (row.size() < 12) continue;
-
-        PassengerRecord r;
-        std::memset(&r, 0, sizeof(PassengerRecord));
-
-        r.passengerId = std::atoi(row[0].c_str());
-        r.survived = std::atoi(row[1].c_str());
-        r.pclass = std::atoi(row[2].c_str());
-        SafeCopy(r.name, sizeof(r.name), row[3]);
-        SafeCopy(r.sex, sizeof(r.sex), row[4]);
-        r.age = ToFloatOrZero(row[5]);
-        r.sibSp = std::atoi(row[6].c_str());
-        r.parch = std::atoi(row[7].c_str());
-        SafeCopy(r.ticket, sizeof(r.ticket), row[8]);
-        r.fare = ToFloatOrZero(row[9]);
-        SafeCopy(r.cabin, sizeof(r.cabin), row[10]);
-        SafeCopy(r.embarked, sizeof(r.embarked), row[11]);
-
-        records.push_back(r);
-    }
-
-    return records;
+std::string GetFieldString(const Schema& schema, const std::vector<unsigned char>& row, const std::string& col) {
+    int idx = schema.GetColumnIndex(col);
+    if (idx < 0) return std::string();
+    const ColumnDef& c = schema.columns[idx];
+    const unsigned char* p = row.data() + c.offset;
+    int end = c.length;
+    while (end > 0 && p[end - 1] == '\0') --end; // recorta el relleno
+    return std::string((const char*)p, end);
 }
