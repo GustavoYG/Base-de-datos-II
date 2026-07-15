@@ -21,3 +21,7 @@ opencode.json
 
 # Notas y documentacion generadas
 *.md
+
+#Tablas  y wal innecesario subir a github
+*.tbl
+*.wal
