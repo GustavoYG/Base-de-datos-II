@@ -7,14 +7,10 @@
 #include <cctype>
 #include <algorithm>
 
+#include "common/utils.h"
 #include "db/catalog.h"
 
 namespace {
-
-std::string ToLower(std::string s) {
-    for (char& c : s) c = (char)std::tolower((unsigned char)c);
-    return s;
-}
 
 // Divide por espacios conservando substrings entre comillas como un token.
 std::vector<std::string> Tokenize(const std::string& s) {
@@ -110,16 +106,31 @@ void PrintTable(const std::vector<std::string>& cols,
         for (int i = 0; i < n; ++i)
             if ((int)row[i].size() > w[i]) w[i] = (int)row[i].size();
 
-    auto Border = [&](char edge, char fill) {
-        std::cout << edge;
-        for (int i = 0; i < n; ++i) {
-            for (int j = 0; j < w[i] + 2; ++j) std::cout << fill;
-            std::cout << edge;
-        }
-        std::cout << "\n";
-    };
-    auto Row = [&](const std::vector<std::string>& r) {
+    std::cout << '+';
+    for (int i = 0; i < n; ++i) {
+        for (int j = 0; j < w[i] + 2; ++j) std::cout << '-';
+        std::cout << '+';
+    }
+    std::cout << "\n";
+
+    std::cout << '|';
+    for (int i = 0; i < n; ++i) {
+        std::cout << " " << cols[i];
+        int pad = w[i] - (int)cols[i].size();
+        for (int p = 0; p < pad + 1; ++p) std::cout << " ";
         std::cout << "|";
+    }
+    std::cout << "\n";
+
+    std::cout << '+';
+    for (int i = 0; i < n; ++i) {
+        for (int j = 0; j < w[i] + 2; ++j) std::cout << '-';
+        std::cout << '+';
+    }
+    std::cout << "\n";
+
+    for (const auto& r : data) {
+        std::cout << '|';
         for (int i = 0; i < n; ++i) {
             std::cout << " " << r[i];
             int pad = w[i] - (int)r[i].size();
@@ -127,13 +138,14 @@ void PrintTable(const std::vector<std::string>& cols,
             std::cout << "|";
         }
         std::cout << "\n";
-    };
+    }
 
-    Border('+', '-');
-    Row(cols);
-    Border('+', '-');
-    for (const auto& r : data) Row(r);
-    Border('+', '-');
+    std::cout << '+';
+    for (int i = 0; i < n; ++i) {
+        for (int j = 0; j < w[i] + 2; ++j) std::cout << '-';
+        std::cout << '+';
+    }
+    std::cout << "\n";
 }
 
 } // namespace

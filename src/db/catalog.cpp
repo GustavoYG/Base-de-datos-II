@@ -81,7 +81,7 @@ bool Catalog::LoadCsv(const std::string& path) {
     }
     if (resolved.empty()) return false;
 
-    std::vector<std::vector<std::string>> rows = CsvReader::ReadAll(resolved);
+    std::vector<std::vector<std::string>> rows = io::CsvReader_ReadAll(resolved);
     if (rows.empty()) return false; // archivo inexistente o sin cabecera
 
     LoadedTable t;

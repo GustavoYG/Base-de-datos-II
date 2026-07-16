@@ -21,7 +21,8 @@ static std::vector<std::string> SplitCsvLine(const std::string& line) {
     return out;
 }
 
-std::vector<std::vector<std::string>> CsvReader::ReadAll(const std::string& path) {
+namespace io {
+std::vector<std::vector<std::string>> CsvReader_ReadAll(const std::string& path) {
     std::ifstream in(path.c_str());
     std::vector<std::vector<std::string>> rows;
     if (!in) return rows;
@@ -33,3 +34,4 @@ std::vector<std::vector<std::string>> CsvReader::ReadAll(const std::string& path
     }
     return rows;
 }
+} // namespace io

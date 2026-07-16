@@ -2,6 +2,7 @@
 #include <string>
 #include <cctype>
 
+#include "common/utils.h"
 #include "db/catalog.h"
 #include "sql/sql_engine.h"
 
@@ -11,12 +12,6 @@ static std::string Trim(const std::string& s) {
     if (a == std::string::npos) return std::string();
     size_t b = s.find_last_not_of(" \t\r\n");
     return s.substr(a, b - a + 1);
-}
-
-static std::string ToLower(const std::string& s) {
-    std::string r = s;
-    for (char& c : r) c = (char)std::tolower((unsigned char)c);
-    return r;
 }
 
 // Modulo 1: cargar archivos CSV como tablas en bucle hasta QUIT.
