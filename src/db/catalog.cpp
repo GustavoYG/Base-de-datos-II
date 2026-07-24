@@ -102,3 +102,30 @@ void Catalog::PrintLoadedTables() const {
                   << " columnas, heap file: " << kv.second.binPath << ")\n";
     }
 }
+
+bool Catalog::CreateTable(const std::string& name, const std::vector<std::string>& columns) {
+    if (Exists(name)) return false;
+    Schema schema;
+    for (const auto& col : columns)
+        schema.AddColumn(col, ColumnType::STRING, DEFAULT_VARCHAR_LEN);
+    schema.Finalize();
+    std::string schPath = schemaio::SchemaPath(kTablesDir, name);
+    if (!schemaio::SaveSchema(schPath, schema)) return false;
+    StoredTable t;
+    t.name = name;
+    t.schema = schema;
+    t.binPath = kTablesDir + "/" + name + ".bin";
+    tables_[name] = std::move(t);
+    return true;
+}
+
+bool Catalog::DropTable(const std::string& name) {
+    auto it = tables_.find(name);
+    if (it == tables_.end()) return false;
+    tables_.erase(it);
+    std::error_code ec;
+    fs::remove(kTablesDir + "/" + name + ".bin", ec);
+    fs::remove(kTablesDir + "/" + name + ".bin.wal", ec);
+    fs::remove(schemaio::SchemaPath(kTablesDir, name), ec);
+    return true;
+}

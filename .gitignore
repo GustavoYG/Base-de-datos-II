@@ -25,3 +25,5 @@ opencode.json
 #Tablas  y wal innecesario subir a github
 *.tbl
 *.wal
+*.bin
+*.schema

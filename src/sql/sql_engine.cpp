@@ -394,6 +394,75 @@ static std::string ExecuteDelete(Catalog& catalog, const std::string& rawQuery) 
     return "OK. " + std::to_string(deleted) + " fila(s) eliminada(s) de \"" + table + "\".";
 }
 
+// ---- CREATE TABLE nombre (col1, col2, ...) ----
+std::string ExecuteCreateTable(Catalog& catalog, const std::string& rawQuery) {
+    std::string q = rawQuery;
+    q.erase(std::remove(q.begin(), q.end(), ';'), q.end());
+
+    size_t pos = q.find_first_not_of(" \t\r\n");
+    if (pos == std::string::npos || ToLower(q.substr(pos, 6)) != "create")
+        return "Error de sintaxis: se esperaba CREATE.";
+    pos += 6;
+
+    while (pos < q.size() && q[pos] == ' ') pos++;
+    if (ToLower(q.substr(pos, 5)) != "table")
+        return "Error de sintaxis: se esperaba TABLE despues de CREATE.";
+    pos += 5;
+
+    // Nombre de tabla
+    while (pos < q.size() && q[pos] == ' ') pos++;
+    size_t tStart = pos;
+    while (pos < q.size() && q[pos] != ' ' && q[pos] != '(') pos++;
+    std::string table = q.substr(tStart, pos - tStart);
+    if (table.empty()) return "Error de sintaxis: falta el nombre de la tabla.";
+
+    if (catalog.Exists(table))
+        return "Error: La tabla \"" + table + "\" ya existe.";
+
+    // Extraer columnas entre parentesis
+    size_t afterParen = 0;
+    std::string colsRaw = ExtractParenContent(q, pos, afterParen);
+    if (colsRaw.empty()) return "Error de sintaxis: falta lista de columnas (col1, col2, ...).";
+    std::vector<std::string> cols = SplitCommas(colsRaw);
+    if (cols.empty()) return "Error de sintaxis: lista de columnas vacia.";
+
+    if (!catalog.CreateTable(table, cols))
+        return "Error: No se pudo crear la tabla \"" + table + "\".";
+
+    return "OK. Tabla \"" + table + "\" creada con " + std::to_string(cols.size()) + " columnas.";
+}
+
+// ---- DROP TABLE nombre ----
+std::string ExecuteDropTable(Catalog& catalog, const std::string& rawQuery) {
+    std::string q = rawQuery;
+    q.erase(std::remove(q.begin(), q.end(), ';'), q.end());
+
+    size_t pos = q.find_first_not_of(" \t\r\n");
+    if (pos == std::string::npos || ToLower(q.substr(pos, 4)) != "drop")
+        return "Error de sintaxis: se esperaba DROP.";
+    pos += 4;
+
+    while (pos < q.size() && q[pos] == ' ') pos++;
+    if (ToLower(q.substr(pos, 5)) != "table")
+        return "Error de sintaxis: se esperaba TABLE despues de DROP.";
+    pos += 5;
+
+    // Nombre de tabla
+    while (pos < q.size() && q[pos] == ' ') pos++;
+    size_t tStart = pos;
+    while (pos < q.size() && q[pos] != ' ') pos++;
+    std::string table = q.substr(tStart, pos - tStart);
+    if (table.empty()) return "Error de sintaxis: falta el nombre de la tabla.";
+
+    if (!catalog.Exists(table))
+        return "Error: La tabla \"" + table + "\" no existe.";
+
+    if (!catalog.DropTable(table))
+        return "Error: No se pudo eliminar la tabla \"" + table + "\".";
+
+    return "OK. Tabla \"" + table + "\" eliminada.";
+}
+
 // ---- UPDATE tabla SET col = val WHERE col op val ----
 static std::string ExecuteUpdate(Catalog& catalog, const std::string& rawQuery) {
     std::string q = rawQuery;
@@ -546,6 +615,13 @@ void ExecuteAndPrintQuery(Catalog& catalog, const std::string& query) {
     }
     std::string cmd = ToLower(tokens[0]);
 
+    // Despachar CREATE TABLE / DROP TABLE
+    if (cmd == "create" || cmd == "drop") {
+        std::string result = (cmd == "create") ? ExecuteCreateTable(catalog, q) : ExecuteDropTable(catalog, q);
+        std::cout << result << "\n";
+        return;
+    }
+
     // Despachar INSERT / DELETE / UPDATE
     if (cmd == "insert" || cmd == "delete" || cmd == "update") {
         std::string result = ExecuteModifyQuery(catalog, query);
@@ -555,7 +631,7 @@ void ExecuteAndPrintQuery(Catalog& catalog, const std::string& query) {
 
     if (cmd != "select") {
         std::cout << "Error de sintaxis: comando no reconocido \"" << tokens[0]
-                  << "\". Comandos soportados: SELECT, INSERT, DELETE, UPDATE.\n";
+                  << "\". Comandos soportados: SELECT, INSERT, DELETE, UPDATE, CREATE TABLE, DROP TABLE.\n";
         return;
     }
 

@@ -42,6 +42,12 @@ public:
     const StoredTable* Get(const std::string& name) const;
     size_t TableCount() const { return tables_.size(); }
 
+    // Crea una tabla vacia con las columnas especificadas.
+    bool CreateTable(const std::string& name, const std::vector<std::string>& columns);
+
+    // Elimina una tabla del catalogo y su archivo persistido.
+    bool DropTable(const std::string& name);
+
     void PrintLoadedTables() const;
 
     // Directorio donde se persisten las tablas (heap files .bin + .schema).
