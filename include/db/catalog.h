@@ -42,6 +42,9 @@ public:
     const StoredTable* Get(const std::string& name) const;
     size_t TableCount() const { return tables_.size(); }
 
+    std::vector<std::string> GetAllTableNames() const;
+    const std::map<std::string, StoredTable>& GetAllTables() const { return tables_; }
+
     // Crea una tabla vacia con las columnas especificadas.
     bool CreateTable(const std::string& name, const std::vector<std::string>& columns);
 

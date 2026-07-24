@@ -96,6 +96,15 @@ const StoredTable* Catalog::Get(const std::string& name) const {
     return (it == tables_.end()) ? nullptr : &it->second;
 }
 
+std::vector<std::string> Catalog::GetAllTableNames() const {
+    std::vector<std::string> names;
+    names.reserve(tables_.size());
+    for (const auto& kv : tables_) {
+        names.push_back(kv.first);
+    }
+    return names;
+}
+
 void Catalog::PrintLoadedTables() const {
     for (const auto& kv : tables_) {
         std::cout << "  - " << kv.first << " (" << kv.second.schema.columns.size()

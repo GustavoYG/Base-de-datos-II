@@ -11,6 +11,7 @@
 #include "db/catalog.h"
 #include "common/utils.h"
 #include "io/serializer.h"
+#include "io/interactive_cli.h"
 #include "storage/record_manager.h"
 
 namespace {
@@ -788,11 +789,11 @@ void ExecuteAndPrintQuery(Catalog& catalog, const std::string& query) {
 }
 
 void RunSqlCli(Catalog& catalog) {
-    std::cout << "Motor SQL CLI (escriba QUIT para regresar al menu principal).\n";
+    std::cout << "Motor SQL CLI con Auto-Complete (escriba QUIT para regresar al menu principal).\n";
+    std::cout << "  - Tecla TAB / Flechas para sugerencias interactiva tipo IDE.\n";
     std::string line;
     while (true) {
-        std::cout << "SQL> ";
-        if (!std::getline(std::cin, line)) break; // EOF
+        line = cli::ReadLineWithAutoComplete("SQL> ", &catalog);
         size_t a = line.find_first_not_of(" \t\r\n");
         if (a == std::string::npos) continue;     // linea vacia
         size_t b = line.find_last_not_of(" \t\r\n");
