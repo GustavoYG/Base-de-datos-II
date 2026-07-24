@@ -111,8 +111,29 @@ const LoadedTable* Catalog::Get(const std::string& name) const {
 
 void Catalog::PrintLoadedTables() const {
     for (const auto& kv : tables_) {
-        std::cout << "  - " << kv.first << " (" << kv.second.rows.size() << " filas)\n";
+        std::cout << "  - " << kv.first << " (" << kv.second.rows.size() << " filas, "
+                  << kv.second.columns.size() << " columnas)\n";
     }
+}
+
+bool Catalog::CreateTable(const std::string& name, const std::vector<std::string>& columns) {
+    if (Exists(name)) return false;
+    LoadedTable t;
+    t.name = name;
+    t.columns = columns;
+    tables_[name] = std::move(t);
+    SaveTable(tables_[name]);
+    return true;
+}
+
+bool Catalog::DropTable(const std::string& name) {
+    auto it = tables_.find(name);
+    if (it == tables_.end()) return false;
+    tables_.erase(it);
+    std::string file = kTablesDir + "/" + name + ".tbl";
+    std::error_code ec;
+    fs::remove(file, ec);
+    return true;
 }
 
 // --- Persistencia ---

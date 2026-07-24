@@ -42,6 +42,49 @@ static void LoadCsvModule(Catalog& catalog) {
     }
 }
 
+// Modulo 3: gestionar tablas (CREATE/DROP) interactivo.
+static void RunTableManager(Catalog& catalog) {
+    std::cout << "\n[GESTIONAR TABLAS]\n";
+    std::cout << "Comandos disponibles:\n";
+    std::cout << "  CREATE TABLE nombre (col1, col2, ...)\n";
+    std::cout << "  DROP TABLE nombre\n";
+    std::cout << "  LIST  (ver tablas existentes)\n";
+    std::cout << "  QUIT  (regresar al menu principal)\n";
+
+    while (true) {
+        std::cout << "\nTABLAS> ";
+        std::string line;
+        if (!std::getline(std::cin, line)) break;
+        line = Trim(line);
+        if (line.empty()) continue;
+        if (ToLower(line) == "quit") break;
+
+        std::string low = ToLower(line);
+
+        if (low == "list") {
+            std::cout << "Tablas existentes:\n";
+            catalog.PrintLoadedTables();
+            continue;
+        }
+
+        // CREATE TABLE nombre (col1, col2, ...)
+        if (low.substr(0, 6) == "create") {
+            std::string result = ExecuteModifyQuery(catalog, line);
+            std::cout << result << "\n";
+            continue;
+        }
+
+        // DROP TABLE nombre
+        if (low.substr(0, 4) == "drop") {
+            std::string result = ExecuteModifyQuery(catalog, line);
+            std::cout << result << "\n";
+            continue;
+        }
+
+        std::cout << "Comando no reconocido. Use CREATE TABLE, DROP TABLE, LIST o QUIT.\n";
+    }
+}
+
 int main() {
     Catalog catalog;
 
@@ -55,7 +98,8 @@ int main() {
         std::cout << "\nSGDB\n";
         std::cout << "1. Cargar archivo CSV\n";
         std::cout << "2. SQL CLI\n";
-        std::cout << "3. Salir\n";
+        std::cout << "3. Gestionar tablas (CREATE/DROP)\n";
+        std::cout << "4. Salir\n";
         std::cout << "Seleccione una opcion: ";
 
         std::string line;
@@ -67,6 +111,8 @@ int main() {
         } else if (op == 2) {
             RunSqlCli(catalog);
         } else if (op == 3) {
+            RunTableManager(catalog);
+        } else if (op == 4) {
             break;
         } else {
             std::cout << "Opcion invalida.\n";
