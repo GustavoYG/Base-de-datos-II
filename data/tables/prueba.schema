@@ -1,6 +1,4 @@
-id INT32 0
-nombre STRING 6
-edad INT32 0
-peso FLOAT 0
-activo BOOL 0
-fecha STRING 10
+PassengerId INT32 0
+Name STRING 11
+Sex STRING 6
+Age INT32 0
