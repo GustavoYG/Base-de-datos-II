@@ -29,4 +29,11 @@ public:
     bool ReadRecord(int pageId, int slot, std::vector<unsigned char>& outRow);
     bool UpdateRecord(int pageId, int slot, const std::vector<unsigned char>& row);
     bool DeleteRecord(int pageId, int slot);
+
+    int GetNumPages() const;
+
+    // Enumerar todos los registros validos (pageId, slot) para un full table
+    // scan. Solo devuelve slots ocupados (length > 0) dentro del rango real del
+    // slot directory de cada pagina.
+    void ScanAll(std::vector<std::pair<int,int>>& out) const;
 };

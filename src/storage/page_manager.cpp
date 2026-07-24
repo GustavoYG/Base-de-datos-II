@@ -53,7 +53,7 @@ bool PageManager::WritePage(int pageId, const Page& page) {
     return true;
 }
 
-bool PageManager::ReadPage(int pageId, Page& outPage) {
+bool PageManager::ReadPage(int pageId, Page& outPage) const {
     std::ifstream f(path.c_str(), std::ios::binary);
     if (!f) return false;
 

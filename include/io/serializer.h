@@ -14,5 +14,8 @@ std::vector<unsigned char> RowToBytes(const Schema& schema, const std::vector<st
 // Accesores tipados sobre una fila de bytes. Devuelven 0 / "" si la columna no
 // existe. Se usan para proyeccion y para las consultas de la capa interactiva.
 int32_t GetFieldInt32(const Schema& schema, const std::vector<unsigned char>& row, const std::string& col);
+int64_t GetFieldInt64(const Schema& schema, const std::vector<unsigned char>& row, const std::string& col);
 float GetFieldFloat(const Schema& schema, const std::vector<unsigned char>& row, const std::string& col);
+double GetFieldDouble(const Schema& schema, const std::vector<unsigned char>& row, const std::string& col);
+bool GetFieldBool(const Schema& schema, const std::vector<unsigned char>& row, const std::string& col);
 std::string GetFieldString(const Schema& schema, const std::vector<unsigned char>& row, const std::string& col);

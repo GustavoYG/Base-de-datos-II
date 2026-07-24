@@ -6,9 +6,12 @@
 #include <cstdlib>
 #include <cctype>
 #include <algorithm>
+#include <functional>
 
-#include "common/utils.h"
 #include "db/catalog.h"
+#include "common/utils.h"
+#include "io/serializer.h"
+#include "storage/record_manager.h"
 
 namespace {
 
@@ -70,8 +73,8 @@ bool ParseOp(const std::string& raw, CmpOp& op) {
     return false;
 }
 
-// Evalua la condicion para una celda. Si ambos lados son numericos, compara
-// numericamente; si no, compara como texto (comportamiento "simplified SQL").
+// Evalua la condicion para un valor de celda ya tipado. Si ambos lados son
+// numericos, compara numericamente; si no, compara como texto.
 bool EvalCondition(const std::string& cell, CmpOp op, const std::string& value) {
     if (IsNumber(cell) && IsNumber(value)) {
         double a = std::strtod(cell.c_str(), nullptr);
@@ -106,14 +109,14 @@ void PrintTable(const std::vector<std::string>& cols,
         for (int i = 0; i < n; ++i)
             if ((int)row[i].size() > w[i]) w[i] = (int)row[i].size();
 
-    std::cout << '+';
+    std::cout << "+";
     for (int i = 0; i < n; ++i) {
-        for (int j = 0; j < w[i] + 2; ++j) std::cout << '-';
-        std::cout << '+';
+        for (int j = 0; j < w[i] + 2; ++j) std::cout << "-";
+        std::cout << "+";
     }
     std::cout << "\n";
 
-    std::cout << '|';
+    std::cout << "|";
     for (int i = 0; i < n; ++i) {
         std::cout << " " << cols[i];
         int pad = w[i] - (int)cols[i].size();
@@ -122,15 +125,15 @@ void PrintTable(const std::vector<std::string>& cols,
     }
     std::cout << "\n";
 
-    std::cout << '+';
+    std::cout << "+";
     for (int i = 0; i < n; ++i) {
-        for (int j = 0; j < w[i] + 2; ++j) std::cout << '-';
-        std::cout << '+';
+        for (int j = 0; j < w[i] + 2; ++j) std::cout << "-";
+        std::cout << "+";
     }
     std::cout << "\n";
 
     for (const auto& r : data) {
-        std::cout << '|';
+        std::cout << "|";
         for (int i = 0; i < n; ++i) {
             std::cout << " " << r[i];
             int pad = w[i] - (int)r[i].size();
@@ -140,12 +143,27 @@ void PrintTable(const std::vector<std::string>& cols,
         std::cout << "\n";
     }
 
-    std::cout << '+';
+    std::cout << "+";
     for (int i = 0; i < n; ++i) {
-        for (int j = 0; j < w[i] + 2; ++j) std::cout << '-';
-        std::cout << '+';
+        for (int j = 0; j < w[i] + 2; ++j) std::cout << "-";
+        std::cout << "+";
     }
     std::cout << "\n";
+}
+
+// Recorre TODAS las filas del heap file de la tabla (full scan en streaming).
+// Llama 'fn(pageId, slot, rowBytes)' por cada registro valido. Usa ScanAll del
+// RecordManager, que solo enumera slots ocupados (no prueba slots vacios).
+void ScanTable(const StoredTable& t, const std::function<void(int,int,const std::vector<unsigned char>&)>& fn) {
+    RecordManager rm(t.binPath, t.schema, ReplacementPolicy::LRU);
+    std::vector<std::pair<int,int>> locs;
+    rm.ScanAll(locs);
+    for (const auto& loc : locs) {
+        std::vector<unsigned char> row;
+        if (!rm.ReadRecord(loc.first, loc.second, row)) continue;
+        if ((int)row.size() != t.schema.rowSize) continue;
+        fn(loc.first, loc.second, row);
+    }
 }
 
 } // namespace
@@ -220,7 +238,7 @@ void ExecuteAndPrintQuery(Catalog& catalog, const std::string& query) {
     }
 
     // ¿Existe la tabla?
-    LoadedTable* t = catalog.Get(table);
+    const StoredTable* t = catalog.Get(table);
     if (!t) {
         std::cout << "Error: La tabla \"" << table << "\" no existe. Asegurese de haberla cargado primero en la Opcion 1.\n";
         return;
@@ -229,7 +247,7 @@ void ExecuteAndPrintQuery(Catalog& catalog, const std::string& query) {
     // Resolver columnas seleccionadas.
     std::vector<int> selIdx;
     if (selectAll) {
-        for (int i = 0; i < (int)t->columns.size(); ++i) selIdx.push_back(i);
+        for (int i = 0; i < (int)t->schema.columns.size(); ++i) selIdx.push_back(i);
     } else {
         for (const auto& c : colToks) {
             int idx = t->GetColumnIndex(c);
@@ -249,22 +267,61 @@ void ExecuteAndPrintQuery(Catalog& catalog, const std::string& query) {
             std::cout << "Error: La columna \"" << wCol << "\" no existe en la tabla \"" << table << "\".\n";
             return;
         }
+        // Si la columna es BOOL, normaliza el valor de comparacion a
+        // "true"/"false" (el usuario puede escribir 1/0 o true/false).
+        if (t->schema.columns[whereIdx].type == ColumnType::BOOL) {
+            std::string low = ToLower(wVal);
+            if (low == "1" || low == "true") wVal = "true";
+            else if (low == "0" || low == "false") wVal = "false";
+        }
     }
 
-    // Evaluar sobre las filas.
-    std::vector<std::vector<std::string>> result;
-    int totalMatching = 0;
-    for (const auto& row : t->rows) {
-        if (hasWhere && !EvalCondition(row[whereIdx], wOp, wVal)) continue;
-        totalMatching++;
+    // Proyectar una fila de bytes a strings segun el esquema.
+    auto Project = [&](const std::vector<unsigned char>& row) {
         std::vector<std::string> proj;
         proj.reserve(selIdx.size());
-        for (int i : selIdx) proj.push_back(row[i]);
-        result.push_back(std::move(proj));
-    }
+        for (int i : selIdx) {
+            const ColumnDef& c = t->schema.columns[i];
+            switch (c.type) {
+                case ColumnType::INT32:  proj.push_back(std::to_string(GetFieldInt32(t->schema, row, c.name))); break;
+                case ColumnType::INT64:  proj.push_back(std::to_string(GetFieldInt64(t->schema, row, c.name))); break;
+                case ColumnType::FLOAT:  proj.push_back(std::to_string(GetFieldFloat(t->schema, row, c.name))); break;
+                case ColumnType::DOUBLE: proj.push_back(std::to_string(GetFieldDouble(t->schema, row, c.name))); break;
+                case ColumnType::BOOL:   proj.push_back(GetFieldBool(t->schema, row, c.name) ? "true" : "false"); break;
+                default:                 proj.push_back(GetFieldString(t->schema, row, c.name)); break;
+            }
+        }
+        return proj;
+    };
+
+    // Valor de una celda como texto, respetando el tipo real de la columna
+    // (para que el WHERE compare numericamente o como texto correctamente).
+    auto CellToString = [&](const std::vector<unsigned char>& row, int colIdx) -> std::string {
+        const ColumnDef& c = t->schema.columns[colIdx];
+        switch (c.type) {
+            case ColumnType::INT32:  return std::to_string(GetFieldInt32(t->schema, row, c.name));
+            case ColumnType::INT64:  return std::to_string(GetFieldInt64(t->schema, row, c.name));
+            case ColumnType::FLOAT:  return std::to_string(GetFieldFloat(t->schema, row, c.name));
+            case ColumnType::DOUBLE: return std::to_string(GetFieldDouble(t->schema, row, c.name));
+            case ColumnType::BOOL:   return GetFieldBool(t->schema, row, c.name) ? "true" : "false";
+            default:                 return GetFieldString(t->schema, row, c.name);
+        }
+    };
+
+    // Evaluar sobre las filas del heap file (full scan en streaming).
+    std::vector<std::vector<std::string>> result;
+    long long totalMatching = 0;
+    ScanTable(*t, [&](int, int, const std::vector<unsigned char>& row) {
+        if (hasWhere) {
+            std::string cell = CellToString(row, whereIdx);
+            if (!EvalCondition(cell, wOp, wVal)) return;
+        }
+        ++totalMatching;
+        result.push_back(Project(row));
+    });
 
     std::vector<std::string> headers;
-    for (int i : selIdx) headers.push_back(t->columns[i]);
+    for (int i : selIdx) headers.push_back(t->schema.columns[i].name);
 
     // Vista previa (el spec muestra un numero limitado de filas; ajustable).
     const int PREVIEW_LIMIT = 2;
@@ -275,7 +332,7 @@ void ExecuteAndPrintQuery(Catalog& catalog, const std::string& query) {
     if (hasWhere)
         std::cout << "[Mostrando " << shown << " de " << totalMatching << " filas que cumplen la condicion]\n";
     else
-        std::cout << "[Mostrando " << shown << " de " << t->rows.size() << " filas]\n";
+        std::cout << "[Mostrando " << shown << " de " << totalMatching << " filas]\n";
 }
 
 void RunSqlCli(Catalog& catalog) {

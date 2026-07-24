@@ -34,4 +34,8 @@ std::vector<std::vector<std::string>> CsvReader_ReadAll(const std::string& path)
     }
     return rows;
 }
+
+std::vector<std::string> CsvReader_ReadAll_one(const std::string& line) {
+    return SplitCsvLine(line);
+}
 } // namespace io

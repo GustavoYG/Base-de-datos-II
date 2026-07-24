@@ -26,13 +26,13 @@ static void LoadCsvModule(Catalog& catalog) {
         if (ToLower(path) == "quit") break;
 
         if (catalog.LoadCsv(path)) {
-            std::string name = LoadedTable::TableNameFromPath(path);
-            const LoadedTable* t = catalog.Get(name);
+            std::string name = StoredTable::TableNameFromPath(path);
+            const StoredTable* t = catalog.Get(name);
             std::cout << "-> Archivo cargado correctamente.\n";
             std::cout << "-> Tabla creada: \"" << name << "\"\n";
-            std::cout << "-> Esquema detectado (Columnas): [";
-            for (size_t i = 0; i < t->columns.size(); ++i) {
-                std::cout << (i ? ", " : "") << t->columns[i];
+            std::cout << "-> Esquema detectado (" << t->schema.columns.size() << " columnas): [";
+            for (size_t i = 0; i < t->schema.columns.size(); ++i) {
+                std::cout << (i ? ", " : "") << t->schema.columns[i].name;
             }
             std::cout << "]\n";
         } else {

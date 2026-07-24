@@ -64,6 +64,17 @@ bool RecordManager::InsertRecord(const std::vector<unsigned char>& row, int& out
             continue;
         }
 
+        // Un registro NUNCA cruza el limite de pagina: si no cabe entero en la
+        // pagina actual (incluso estando vacia), se manda a una nueva pagina.
+        // Esto es la "recuperacion de registro partido" de forma correcta y es
+        // lo que hacen los SGDB reales (SQLite/InnoDB): el slot apunta a un
+        // registro contiguo dentro de una sola pagina.
+        if (recordSize > (int)sizeof(rp->data)) {
+            bp->UnpinPage(currentPageId, false);
+            currentPageId = pm.AllocatePage();
+            continue;
+        }
+
         // Reusar un slot libre de la freelist, si lo hay.
         int reuseSlot = -1;
         if (rp->freeSlotHead >= 0) {
@@ -161,6 +172,27 @@ bool RecordManager::UpdateRecord(int pageId, int slot, const std::vector<unsigne
     AppendWalEntry(walPath, payload);
 
     return bp->UnpinPage(pageId, true);
+}
+
+int RecordManager::GetNumPages() const {
+    return pm.GetPageCount();
+}
+
+void RecordManager::ScanAll(std::vector<std::pair<int,int>>& out) const {
+    const int n = pm.GetPageCount();
+    for (int p = 0; p < n; ++p) {
+        Page page;
+        if (!pm.ReadPage(p, page)) continue;
+        RecordPage* rp = (RecordPage*)&page;
+        if (rp->slotCount <= 0) continue;
+        const int slotEntrySize = (int)sizeof(SlotEntry);
+        for (int s = 0; s < rp->slotCount; ++s) {
+            int slotPos = (int)sizeof(rp->data) - (s + 1) * slotEntrySize;
+            SlotEntry se;
+            std::memcpy(&se, rp->data + slotPos, slotEntrySize);
+            if (se.length > 0) out.push_back({p, s}); // slot ocupado
+        }
+    }
 }
 
 bool RecordManager::DeleteRecord(int pageId, int slot) {
