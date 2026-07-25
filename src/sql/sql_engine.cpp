@@ -7,14 +7,27 @@
 #include <cctype>
 #include <algorithm>
 #include <functional>
+#include <sstream>
+#include <iomanip>
 
 #include "db/catalog.h"
 #include "common/utils.h"
 #include "io/serializer.h"
 #include "io/interactive_cli.h"
 #include "storage/record_manager.h"
+#include "sql/operator.h"
+#include "sql/operators.h"
+#include "index/index_manager.h"
+#include "sql/benchmark.h"
 
 namespace {
+
+bool IsNumber(const std::string& s) {
+    if (s.empty()) return false;
+    char* end = nullptr;
+    std::strtod(s.c_str(), &end);
+    return end != s.c_str() && *end == '\0';
+}
 
 // Divide por espacios conservando substrings entre comillas como un token.
 std::vector<std::string> Tokenize(const std::string& s) {
@@ -33,18 +46,27 @@ std::vector<std::string> Tokenize(const std::string& s) {
     return out;
 }
 
-// Separa una lista "a,b , c" por comas, sin elementos vacios.
+// Separa una lista "a,b , c" por comas.
 std::vector<std::string> SplitCommas(const std::string& s) {
     std::vector<std::string> out;
     std::string cur;
     for (char c : s) {
         if (c == ',') {
-            if (!cur.empty()) { out.push_back(cur); cur.clear(); }
-        } else if (!std::isspace((unsigned char)c)) {
+            size_t a = cur.find_first_not_of(" \t\r\n");
+            if (a != std::string::npos) {
+                size_t b = cur.find_last_not_of(" \t\r\n");
+                out.push_back(cur.substr(a, b - a + 1));
+            }
+            cur.clear();
+        } else {
             cur += c;
         }
     }
-    if (!cur.empty()) out.push_back(cur);
+    size_t a = cur.find_first_not_of(" \t\r\n");
+    if (a != std::string::npos) {
+        size_t b = cur.find_last_not_of(" \t\r\n");
+        out.push_back(cur.substr(a, b - a + 1));
+    }
     return out;
 }
 
@@ -54,60 +76,25 @@ std::string StripQuotes(const std::string& s) {
     return s;
 }
 
-bool IsNumber(const std::string& s) {
-    if (s.empty()) return false;
-    char* end = nullptr;
-    std::strtod(s.c_str(), &end);
-    return end != s.c_str() && *end == '\0';
-}
-
-enum class CmpOp { EQ, NE, GT, LT, GE, LE };
-
-bool ParseOp(const std::string& raw, CmpOp& op) {
+bool ParseOp(const std::string& raw, CmpOperator& op) {
     std::string r = ToLower(raw);
-    if (r == "=" || r == "==") { op = CmpOp::EQ; return true; }
-    if (r == "!=" || r == "<>") { op = CmpOp::NE; return true; }
-    if (r == ">") { op = CmpOp::GT; return true; }
-    if (r == "<") { op = CmpOp::LT; return true; }
-    if (r == ">=") { op = CmpOp::GE; return true; }
-    if (r == "<=") { op = CmpOp::LE; return true; }
-    return false;
-}
-
-// Evalua la condicion para un valor de celda ya tipado. Si ambos lados son
-// numericos, compara numericamente; si no, compara como texto.
-bool EvalCondition(const std::string& cell, CmpOp op, const std::string& value) {
-    if (IsNumber(cell) && IsNumber(value)) {
-        double a = std::strtod(cell.c_str(), nullptr);
-        double b = std::strtod(value.c_str(), nullptr);
-        switch (op) {
-            case CmpOp::EQ: return a == b;
-            case CmpOp::NE: return a != b;
-            case CmpOp::GT: return a > b;
-            case CmpOp::LT: return a < b;
-            case CmpOp::GE: return a >= b;
-            case CmpOp::LE: return a <= b;
-        }
-    }
-    int c = cell.compare(value);
-    switch (op) {
-        case CmpOp::EQ: return c == 0;
-        case CmpOp::NE: return c != 0;
-        case CmpOp::GT: return c > 0;
-        case CmpOp::LT: return c < 0;
-        case CmpOp::GE: return c >= 0;
-        case CmpOp::LE: return c <= 0;
-    }
+    if (r == "=" || r == "==") { op = CmpOperator::EQ; return true; }
+    if (r == "!=" || r == "<>") { op = CmpOperator::NE; return true; }
+    if (r == ">") { op = CmpOperator::GT; return true; }
+    if (r == "<") { op = CmpOperator::LT; return true; }
+    if (r == ">=") { op = CmpOperator::GE; return true; }
+    if (r == "<=") { op = CmpOperator::LE; return true; }
     return false;
 }
 
 void PrintTable(const std::vector<std::string>& cols,
                 const std::vector<std::vector<std::string>>& data) {
+    if (cols.empty()) return;
     const int n = (int)cols.size();
     std::vector<int> w(n, 0);
     for (int i = 0; i < n; ++i) w[i] = (int)cols[i].size();
     for (const auto& row : data)
-        for (int i = 0; i < n; ++i)
+        for (int i = 0; i < n && i < (int)row.size(); ++i)
             if ((int)row[i].size() > w[i]) w[i] = (int)row[i].size();
 
     std::cout << "+";
@@ -136,8 +123,9 @@ void PrintTable(const std::vector<std::string>& cols,
     for (const auto& r : data) {
         std::cout << "|";
         for (int i = 0; i < n; ++i) {
-            std::cout << " " << r[i];
-            int pad = w[i] - (int)r[i].size();
+            std::string val = (i < (int)r.size()) ? r[i] : "";
+            std::cout << " " << val;
+            int pad = w[i] - (int)val.size();
             for (int p = 0; p < pad + 1; ++p) std::cout << " ";
             std::cout << "|";
         }
@@ -152,25 +140,6 @@ void PrintTable(const std::vector<std::string>& cols,
     std::cout << "\n";
 }
 
-// Recorre TODAS las filas del heap file de la tabla (full scan en streaming).
-// Llama 'fn(pageId, slot, rowBytes)' por cada registro valido. Usa ScanAll del
-// RecordManager, que solo enumera slots ocupados (no prueba slots vacios).
-void ScanTable(const StoredTable& t, const std::function<void(int,int,const std::vector<unsigned char>&)>& fn) {
-    RecordManager rm(t.binPath, t.schema, ReplacementPolicy::LRU);
-    std::vector<std::pair<int,int>> locs;
-    rm.ScanAll(locs);
-    for (const auto& loc : locs) {
-        std::vector<unsigned char> row;
-        if (!rm.ReadRecord(loc.first, loc.second, row)) continue;
-        if ((int)row.size() != t.schema.rowSize) continue;
-        fn(loc.first, loc.second, row);
-    }
-}
-
-} // namespace
-
-// Helper: extrae contenido entre el primer '(' y su ')' correspondiente.
-// Devuelve el contenido (sin paréntesis) y la posición justo después del ')'.
 static std::string ExtractParenContent(const std::string& s, size_t startPos, size_t& endPos) {
     size_t open = s.find('(', startPos);
     if (open == std::string::npos) return "";
@@ -182,7 +151,6 @@ static std::string ExtractParenContent(const std::string& s, size_t startPos, si
     return "";
 }
 
-// Helper: convierte un string a bytes según el tipo de columna (para INSERT/UPDATE).
 static bool SerializeValue(const ColumnDef& col, const std::string& val, std::vector<unsigned char>& out) {
     out.resize(Schema::TypeSize(col.type, col.length));
     std::fill(out.begin(), out.end(), 0);
@@ -214,7 +182,7 @@ static bool SerializeValue(const ColumnDef& col, const std::string& val, std::ve
             std::memcpy(out.data(), &v, sizeof(v));
             break;
         }
-        default: { // STRING/CHAR/VARCHAR
+        default: {
             size_t n = std::min(val.size(), (size_t)col.length - 1);
             std::memcpy(out.data(), val.c_str(), n);
             out[n] = 0;
@@ -224,206 +192,216 @@ static bool SerializeValue(const ColumnDef& col, const std::string& val, std::ve
     return true;
 }
 
-// ---- INSERT INTO tabla (col1, col2, ...) VALUES (val1, val2, ...) ----
+// ---- INSERT INTO tabla (col1, col2) VALUES (val1, val2) ----
 static std::string ExecuteInsert(Catalog& catalog, const std::string& rawQuery) {
     std::string q = rawQuery;
     q.erase(std::remove(q.begin(), q.end(), ';'), q.end());
 
-    size_t pos = q.find_first_not_of(" \t\r\n");
-    if (pos == std::string::npos || ToLower(q.substr(pos, 6)) != "insert")
-        return "Error de sintaxis: se esperaba INSERT.";
-    pos += 6;
-    while (pos < q.size() && q[pos] == ' ') pos++;
-    if (ToLower(q.substr(pos, 4)) != "into")
-        return "Error de sintaxis: se esperaba INTO despues de INSERT.";
-    pos += 4;
+    std::vector<std::string> toks = Tokenize(q);
+    if (toks.size() < 4 || ToLower(toks[0]) != "insert" || ToLower(toks[1]) != "into")
+        return "Error de sintaxis: se esperaba INSERT INTO tabla ...";
 
-    // Nombre de tabla
-    while (pos < q.size() && q[pos] == ' ') pos++;
-    size_t tableStart = pos;
-    while (pos < q.size() && q[pos] != ' ' && q[pos] != '(') pos++;
-    std::string table = q.substr(tableStart, pos - tableStart);
-
+    std::string table = toks[2];
     const StoredTable* t = catalog.Get(table);
     if (!t) return "Error: La tabla \"" + table + "\" no existe.";
 
-    // Extraer columnas: (col1, col2, ...)
-    size_t afterParen = 0;
-    std::string colsRaw = ExtractParenContent(q, pos, afterParen);
+    size_t pos = q.find(table);
+    pos += table.size();
+
+    size_t afterCols = 0;
+    std::string colsRaw = ExtractParenContent(q, pos, afterCols);
     if (colsRaw.empty()) return "Error de sintaxis: falta lista de columnas (col1, col2, ...).";
     std::vector<std::string> cols = SplitCommas(colsRaw);
-    if (cols.empty()) return "Error de sintaxis: lista de columnas vacia.";
 
-    // Buscar VALUES
-    pos = afterParen;
-    while (pos < q.size() && q[pos] == ' ') pos++;
-    if (ToLower(q.substr(pos, 6)) != "values")
-        return "Error de sintaxis: se esperaba VALUES.";
-    pos += 6;
-
-    // Extraer valores: (val1, val2, ...)
-    std::string valsRaw = ExtractParenContent(q, pos, afterParen);
+    size_t afterVals = 0;
+    std::string valsRaw = ExtractParenContent(q, afterCols, afterVals);
     if (valsRaw.empty()) return "Error de sintaxis: falta lista de valores (val1, val2, ...).";
+    std::vector<std::string> vals = SplitCommas(valsRaw);
 
-    // Parsear valores respetando comillas
-    std::vector<std::string> vals;
-    {
-        std::string cur;
-        bool inQ = false;
-        for (char c : valsRaw) {
-            if (c == '"') { inQ = !inQ; cur += c; continue; }
-            if (!inQ && c == ',') {
-                if (!cur.empty()) { vals.push_back(StripQuotes(cur)); cur.clear(); }
-            } else if (c != ' ' || inQ) {
-                cur += c;
-            }
-        }
-        if (!cur.empty()) vals.push_back(StripQuotes(cur));
-    }
+    if (cols.size() != vals.size())
+        return "Error: la cantidad de columnas y valores no coincide.";
 
-    if (cols.size() != vals.size()) {
-        return "Error: cantidad de columnas (" + std::to_string(cols.size()) +
-               ") no coincide con cantidad de valores (" + std::to_string(vals.size()) + ").";
-    }
-
-    // Preparar fila binaria según esquema
     std::vector<unsigned char> row(t->schema.rowSize);
     for (size_t i = 0; i < cols.size(); ++i) {
         int idx = t->GetColumnIndex(cols[i]);
-        if (idx < 0)
-            return "Error: La columna \"" + cols[i] + "\" no existe en la tabla \"" + table + "\".";
+        if (idx < 0) return "Error: la columna \"" + cols[i] + "\" no existe en \"" + table + "\".";
         const ColumnDef& cdef = t->schema.columns[idx];
-        std::vector<unsigned char> fieldBytes;
-        if (!SerializeValue(cdef, vals[i], fieldBytes)) return "Error serializando valor.";
-        std::memcpy(row.data() + cdef.offset, fieldBytes.data(), fieldBytes.size());
+        std::vector<unsigned char> fBytes;
+        SerializeValue(cdef, StripQuotes(vals[i]), fBytes);
+        std::memcpy(row.data() + cdef.offset, fBytes.data(), fBytes.size());
     }
 
-    // Insertar via RecordManager
     RecordManager rm(t->binPath, t->schema, ReplacementPolicy::LRU);
-    int pageId, slot;
-    if (!rm.InsertRecord(row, pageId, slot)) {
-        return "Error: no se pudo insertar la fila (disco lleno?).";
+    int pId, slot;
+    if (!rm.InsertRecord(row, pId, slot)) {
+        return "Error: no se pudo insertar el registro.";
     }
+
+    // Reconstruir indices si existen
+    for (const auto& cdef : t->schema.columns) {
+        if (IndexManager::HasIndex(table, cdef.name)) {
+            IndexManager::BuildIndex(catalog, table, cdef.name);
+        }
+    }
+
     return "OK. 1 fila insertada en \"" + table + "\".";
 }
 
-// ---- DELETE FROM tabla WHERE columna op valor ----
+// ---- DELETE FROM tabla WHERE col op val ----
 static std::string ExecuteDelete(Catalog& catalog, const std::string& rawQuery) {
     std::string q = rawQuery;
     q.erase(std::remove(q.begin(), q.end(), ';'), q.end());
 
-    size_t pos = q.find_first_not_of(" \t\r\n");
-    if (pos == std::string::npos || ToLower(q.substr(pos, 6)) != "delete")
-        return "Error de sintaxis: se esperaba DELETE.";
-    pos += 6;
-    while (pos < q.size() && q[pos] == ' ') pos++;
-    if (ToLower(q.substr(pos, 4)) != "from")
-        return "Error de sintaxis: se esperaba FROM despues de DELETE.";
-    pos += 4;
+    std::vector<std::string> toks = Tokenize(q);
+    if (toks.size() < 3 || ToLower(toks[0]) != "delete" || ToLower(toks[1]) != "from")
+        return "Error de sintaxis: se esperaba DELETE FROM tabla ...";
 
-    // Tabla
-    while (pos < q.size() && q[pos] == ' ') pos++;
-    size_t tStart = pos;
-    while (pos < q.size() && q[pos] != ' ') pos++;
-    std::string table = q.substr(tStart, pos - tStart);
-
+    std::string table = toks[2];
     const StoredTable* t = catalog.Get(table);
     if (!t) return "Error: La tabla \"" + table + "\" no existe.";
 
-    // WHERE
-    while (pos < q.size() && q[pos] == ' ') pos++;
-    if (ToLower(q.substr(pos, 5)) != "where")
-        return "Error de sintaxis: se esperaba WHERE.";
-    pos += 5;
+    ScanOperator scanOp(*t);
+    std::unique_ptr<Operator> plan = std::make_unique<ScanOperator>(*t);
 
-    // columna operador valor
-    while (pos < q.size() && q[pos] == ' ') pos++;
-    size_t cStart = pos;
-    while (pos < q.size() && q[pos] != ' ') pos++;
-    std::string wCol = q.substr(cStart, pos - cStart);
-
-    while (pos < q.size() && q[pos] == ' ') pos++;
-    size_t oStart = pos;
-    while (pos < q.size() && q[pos] != ' ') pos++;
-    std::string opStr = q.substr(oStart, pos - oStart);
-    CmpOp wOp;
-    if (!ParseOp(opStr, wOp))
-        return "Error de sintaxis: operador no soportado (use =, >, <, >=, <=, !=).";
-
-    while (pos < q.size() && q[pos] == ' ') pos++;
-    std::string wVal = q.substr(pos);
-    if (wVal.size() >= 2 && wVal.front() == '"' && wVal.back() == '"')
-        wVal = wVal.substr(1, wVal.size() - 2);
-
-    int whereIdx = t->GetColumnIndex(wCol);
-    if (whereIdx < 0)
-        return "Error: La columna \"" + wCol + "\" no existe en la tabla \"" + table + "\".";
-
-    // Normalizar BOOL si corresponde
-    if (t->schema.columns[whereIdx].type == ColumnType::BOOL) {
-        std::string low = ToLower(wVal);
-        if (low == "1" || low == "true") wVal = "true";
-        else if (low == "0" || low == "false") wVal = "false";
+    if (toks.size() >= 7 && ToLower(toks[3]) == "where") {
+        CmpOperator op;
+        if (ParseOp(toks[5], op)) {
+            plan = std::make_unique<SelectOperator>(std::move(plan), toks[4], op, StripQuotes(toks[6]));
+        }
     }
 
-    // Full scan + delete matching
     RecordManager rm(t->binPath, t->schema, ReplacementPolicy::LRU);
-    std::vector<std::pair<int,int>> locs;
-    rm.ScanAll(locs);
+    plan->Open();
+    Tuple tuple;
     int deleted = 0;
+
+    std::vector<std::pair<int, int>> locs;
+    rm.ScanAll(locs);
+
+    int whereIdx = (toks.size() >= 7) ? t->GetColumnIndex(toks[4]) : -1;
+    CmpOperator wOp;
+    if (toks.size() >= 7) ParseOp(toks[5], wOp);
+
     for (const auto& loc : locs) {
         std::vector<unsigned char> row;
         if (!rm.ReadRecord(loc.first, loc.second, row)) continue;
-        if ((int)row.size() != t->schema.rowSize) continue;
 
-        // Obtener valor de celda para comparar
-        const ColumnDef& cdef = t->schema.columns[whereIdx];
-        std::string cellVal;
-        switch (cdef.type) {
-            case ColumnType::INT32:  cellVal = std::to_string(GetFieldInt32(t->schema, row, cdef.name)); break;
-            case ColumnType::INT64:  cellVal = std::to_string(GetFieldInt64(t->schema, row, cdef.name)); break;
-            case ColumnType::FLOAT:  cellVal = std::to_string(GetFieldFloat(t->schema, row, cdef.name)); break;
-            case ColumnType::DOUBLE: cellVal = std::to_string(GetFieldDouble(t->schema, row, cdef.name)); break;
-            case ColumnType::BOOL:   cellVal = GetFieldBool(t->schema, row, cdef.name) ? "true" : "false"; break;
-            default:                 cellVal = GetFieldString(t->schema, row, cdef.name); break;
+        bool matches = true;
+        if (whereIdx >= 0) {
+            const ColumnDef& cdef = t->schema.columns[whereIdx];
+            std::string cellVal;
+            switch (cdef.type) {
+                case ColumnType::INT32:  cellVal = std::to_string(GetFieldInt32(t->schema, row, cdef.name)); break;
+                case ColumnType::INT64:  cellVal = std::to_string(GetFieldInt64(t->schema, row, cdef.name)); break;
+                case ColumnType::FLOAT:  cellVal = std::to_string(GetFieldFloat(t->schema, row, cdef.name)); break;
+                case ColumnType::DOUBLE: cellVal = std::to_string(GetFieldDouble(t->schema, row, cdef.name)); break;
+                case ColumnType::BOOL:   cellVal = GetFieldBool(t->schema, row, cdef.name) ? "true" : "false"; break;
+                default:                 cellVal = GetFieldString(t->schema, row, cdef.name); break;
+            }
+            if (toks.size() >= 7) {
+                int cmp = cellVal.compare(StripQuotes(toks[6]));
+                if (IsNumber(cellVal) && IsNumber(StripQuotes(toks[6]))) {
+                    double a = std::strtod(cellVal.c_str(), nullptr);
+                    double b = std::strtod(StripQuotes(toks[6]).c_str(), nullptr);
+                    cmp = (a < b) ? -1 : (a > b ? 1 : 0);
+                }
+                switch (wOp) {
+                    case CmpOperator::EQ: matches = (cmp == 0); break;
+                    case CmpOperator::NE: matches = (cmp != 0); break;
+                    case CmpOperator::GT: matches = (cmp > 0); break;
+                    case CmpOperator::LT: matches = (cmp < 0); break;
+                    case CmpOperator::GE: matches = (cmp >= 0); break;
+                    case CmpOperator::LE: matches = (cmp <= 0); break;
+                }
+            }
         }
-        if (EvalCondition(cellVal, wOp, wVal)) {
+
+        if (matches) {
             rm.DeleteRecord(loc.first, loc.second);
             deleted++;
         }
     }
+    plan->Close();
+
+    // Reconstruir indices si existen
+    for (const auto& cdef : t->schema.columns) {
+        if (IndexManager::HasIndex(table, cdef.name)) {
+            IndexManager::BuildIndex(catalog, table, cdef.name);
+        }
+    }
+
     return "OK. " + std::to_string(deleted) + " fila(s) eliminada(s) de \"" + table + "\".";
 }
 
-// ---- CREATE TABLE nombre (col1, col2, ...) ----
-std::string ExecuteCreateTable(Catalog& catalog, const std::string& rawQuery) {
+// ---- UPDATE tabla SET col = val WHERE col op val ----
+static std::string ExecuteUpdate(Catalog& catalog, const std::string& rawQuery) {
     std::string q = rawQuery;
     q.erase(std::remove(q.begin(), q.end(), ';'), q.end());
 
-    size_t pos = q.find_first_not_of(" \t\r\n");
-    if (pos == std::string::npos || ToLower(q.substr(pos, 6)) != "create")
-        return "Error de sintaxis: se esperaba CREATE.";
-    pos += 6;
+    std::vector<std::string> toks = Tokenize(q);
+    if (toks.size() < 6 || ToLower(toks[0]) != "update" || ToLower(toks[2]) != "set")
+        return "Error de sintaxis: se esperaba UPDATE tabla SET col = val ...";
 
-    while (pos < q.size() && q[pos] == ' ') pos++;
-    if (ToLower(q.substr(pos, 5)) != "table")
-        return "Error de sintaxis: se esperaba TABLE despues de CREATE.";
-    pos += 5;
+    std::string table = toks[1];
+    const StoredTable* t = catalog.Get(table);
+    if (!t) return "Error: La tabla \"" + table + "\" no existe.";
 
-    // Nombre de tabla
-    while (pos < q.size() && q[pos] == ' ') pos++;
-    size_t tStart = pos;
-    while (pos < q.size() && q[pos] != ' ' && q[pos] != '(') pos++;
-    std::string table = q.substr(tStart, pos - tStart);
-    if (table.empty()) return "Error de sintaxis: falta el nombre de la tabla.";
+    std::string setCol = toks[3];
+    std::string setVal = StripQuotes(toks[5]);
 
-    if (catalog.Exists(table))
-        return "Error: La tabla \"" + table + "\" ya existe.";
+    int setIdx = t->GetColumnIndex(setCol);
+    if (setIdx < 0) return "Error: la columna \"" + setCol + "\" no existe en \"" + table + "\".";
 
-    // Extraer columnas entre parentesis
+    RecordManager rm(t->binPath, t->schema, ReplacementPolicy::LRU);
+    std::vector<std::pair<int, int>> locs;
+    rm.ScanAll(locs);
+
+    int updated = 0;
+    for (const auto& loc : locs) {
+        std::vector<unsigned char> row;
+        if (!rm.ReadRecord(loc.first, loc.second, row)) continue;
+
+        const ColumnDef& cdef = t->schema.columns[setIdx];
+        std::vector<unsigned char> fBytes;
+        SerializeValue(cdef, setVal, fBytes);
+        std::memcpy(row.data() + cdef.offset, fBytes.data(), fBytes.size());
+
+        rm.UpdateRecord(loc.first, loc.second, row);
+        updated++;
+    }
+
+    // Reconstruir indices si existen
+    for (const auto& cdef : t->schema.columns) {
+        if (IndexManager::HasIndex(table, cdef.name)) {
+            IndexManager::BuildIndex(catalog, table, cdef.name);
+        }
+    }
+
+    return "OK. " + std::to_string(updated) + " fila(s) actualizada(s) en \"" + table + "\".";
+}
+
+// ---- CREATE TABLE nombre (col1, col2, ...) ----
+static std::string ExecuteCreateTable(Catalog& catalog, const std::string& rawQuery) {
+    std::string q = rawQuery;
+    q.erase(std::remove(q.begin(), q.end(), ';'), q.end());
+
+    std::vector<std::string> toks = Tokenize(q);
+    if (toks.size() < 3 || ToLower(toks[0]) != "create" || ToLower(toks[1]) != "table")
+        return "Error de sintaxis: se esperaba CREATE TABLE nombre (col1, col2, ...).";
+
+    std::string table = toks[2];
+    size_t parenIdx = table.find('(');
+    if (parenIdx != std::string::npos) {
+        table = table.substr(0, parenIdx);
+    }
+    if (table.empty()) return "Error de sintaxis: falta nombre de la tabla.";
+
+    if (catalog.Exists(table)) return "Error: La tabla \"" + table + "\" ya existe.";
+
     size_t afterParen = 0;
-    std::string colsRaw = ExtractParenContent(q, pos, afterParen);
+    std::string colsRaw = ExtractParenContent(q, 0, afterParen);
     if (colsRaw.empty()) return "Error de sintaxis: falta lista de columnas (col1, col2, ...).";
+
     std::vector<std::string> cols = SplitCommas(colsRaw);
     if (cols.empty()) return "Error de sintaxis: lista de columnas vacia.";
 
@@ -434,371 +412,349 @@ std::string ExecuteCreateTable(Catalog& catalog, const std::string& rawQuery) {
 }
 
 // ---- DROP TABLE nombre ----
-std::string ExecuteDropTable(Catalog& catalog, const std::string& rawQuery) {
+static std::string ExecuteDropTable(Catalog& catalog, const std::string& rawQuery) {
     std::string q = rawQuery;
     q.erase(std::remove(q.begin(), q.end(), ';'), q.end());
 
-    size_t pos = q.find_first_not_of(" \t\r\n");
-    if (pos == std::string::npos || ToLower(q.substr(pos, 4)) != "drop")
-        return "Error de sintaxis: se esperaba DROP.";
-    pos += 4;
+    std::vector<std::string> toks = Tokenize(q);
+    if (toks.size() < 3 || ToLower(toks[0]) != "drop" || ToLower(toks[1]) != "table")
+        return "Error de sintaxis: se esperaba DROP TABLE nombre.";
 
-    while (pos < q.size() && q[pos] == ' ') pos++;
-    if (ToLower(q.substr(pos, 5)) != "table")
-        return "Error de sintaxis: se esperaba TABLE despues de DROP.";
-    pos += 5;
+    std::string table = toks[2];
+    if (!catalog.Exists(table)) return "Error: La tabla \"" + table + "\" no existe.";
 
-    // Nombre de tabla
-    while (pos < q.size() && q[pos] == ' ') pos++;
-    size_t tStart = pos;
-    while (pos < q.size() && q[pos] != ' ') pos++;
-    std::string table = q.substr(tStart, pos - tStart);
-    if (table.empty()) return "Error de sintaxis: falta el nombre de la tabla.";
-
-    if (!catalog.Exists(table))
-        return "Error: La tabla \"" + table + "\" no existe.";
-
-    if (!catalog.DropTable(table))
-        return "Error: No se pudo eliminar la tabla \"" + table + "\".";
+    if (!catalog.DropTable(table)) return "Error: No se pudo eliminar la tabla \"" + table + "\".";
 
     return "OK. Tabla \"" + table + "\" eliminada.";
 }
 
-// ---- UPDATE tabla SET col = val WHERE col op val ----
-static std::string ExecuteUpdate(Catalog& catalog, const std::string& rawQuery) {
-    std::string q = rawQuery;
+} // namespace
+
+std::string ExecuteModifyQuery(Catalog& catalog, const std::string& query) {
+    std::string low = ToLower(query);
+    size_t pos = low.find_first_not_of(" \t\r\n");
+    if (pos == std::string::npos) return "Consulta vacia.";
+    std::string cmd = low.substr(pos);
+
+    if (cmd.rfind("insert", 0) == 0) return ExecuteInsert(catalog, query);
+    if (cmd.rfind("delete", 0) == 0) return ExecuteDelete(catalog, query);
+    if (cmd.rfind("update", 0) == 0) return ExecuteUpdate(catalog, query);
+    if (cmd.rfind("create table", 0) == 0) return ExecuteCreateTable(catalog, query);
+    if (cmd.rfind("drop table", 0) == 0) return ExecuteDropTable(catalog, query);
+
+    return "Comando no soportado.";
+}
+
+// ---- EJECUCION DE CONSULTAS SELECT Y MODIFICACIONES CON MODELO VOLCANO ----
+void ExecuteAndPrintQuery(Catalog& catalog, const std::string& query) {
+    std::string q = query;
     q.erase(std::remove(q.begin(), q.end(), ';'), q.end());
 
     size_t pos = q.find_first_not_of(" \t\r\n");
-    if (pos == std::string::npos || ToLower(q.substr(pos, 6)) != "update")
-        return "Error de sintaxis: se esperaba UPDATE.";
-    pos += 6;
+    if (pos == std::string::npos) return;
+    std::string low = ToLower(q.substr(pos));
 
-    // Tabla
-    while (pos < q.size() && q[pos] == ' ') pos++;
-    size_t tStart = pos;
-    while (pos < q.size() && q[pos] != ' ') pos++;
-    std::string table = q.substr(tStart, pos - tStart);
+    // Command BENCHMARK
+    if (low.rfind("benchmark", 0) == 0) {
+        benchmark::RunIndexBenchmark(catalog, 10000);
+        return;
+    }
 
-    const StoredTable* t = catalog.Get(table);
-    if (!t) return "Error: La tabla \"" + table + "\" no existe.";
-
-    // SET
-    while (pos < q.size() && q[pos] == ' ') pos++;
-    if (ToLower(q.substr(pos, 3)) != "set")
-        return "Error de sintaxis: se esperaba SET.";
-    pos += 3;
-
-    // columna = valor
-    while (pos < q.size() && q[pos] == ' ') pos++;
-    size_t cStart = pos;
-    while (pos < q.size() && q[pos] != ' ') pos++;
-    std::string setCol = q.substr(cStart, pos - cStart);
-
-    while (pos < q.size() && q[pos] == ' ') pos++;
-    if (pos >= q.size() || q[pos] != '=')
-        return "Error de sintaxis: se esperaba = despues de la columna en SET.";
-    pos++; // saltar '='
-
-    while (pos < q.size() && q[pos] == ' ') pos++;
-    // Buscar WHERE para delimitar el valor
-    size_t wherePos = pos;
-    bool foundWhere = false;
-    {
-        std::string low = q;
-        for (auto& c : low) c = (char)std::tolower((unsigned char)c);
-        size_t wp = low.find(" where ", pos);
-        if (wp != std::string::npos) {
-            wherePos = wp;
-            foundWhere = true;
+    // Command CREATE INDEX ON table (col)
+    if (low.rfind("create index", 0) == 0) {
+        std::vector<std::string> toks = Tokenize(q);
+        // CREATE INDEX [name] ON table (col)
+        std::string table, col;
+        for (size_t i = 0; i < toks.size(); ++i) {
+            if (ToLower(toks[i]) == "on" && i + 1 < toks.size()) {
+                table = toks[i + 1];
+            }
         }
-    }
-    std::string setVal = q.substr(pos, wherePos - pos);
-    if (setVal.size() >= 2 && setVal.front() == '"' && setVal.back() == '"')
-        setVal = setVal.substr(1, setVal.size() - 2);
-
-    int setIdx = t->GetColumnIndex(setCol);
-    if (setIdx < 0)
-        return "Error: La columna \"" + setCol + "\" no existe en la tabla \"" + table + "\".";
-
-    if (!foundWhere)
-        return "Error de sintaxis: clausula WHERE incompleta.";
-
-    // WHERE columna operador valor
-    pos = wherePos + 7; // saltar " WHERE "
-    while (pos < q.size() && q[pos] == ' ') pos++;
-    size_t wcStart = pos;
-    while (pos < q.size() && q[pos] != ' ') pos++;
-    std::string wCol = q.substr(wcStart, pos - wcStart);
-
-    while (pos < q.size() && q[pos] == ' ') pos++;
-    size_t woStart = pos;
-    while (pos < q.size() && q[pos] != ' ') pos++;
-    std::string wOpStr = q.substr(woStart, pos - woStart);
-    CmpOp wOp;
-    if (!ParseOp(wOpStr, wOp))
-        return "Error de sintaxis: operador no soportado en WHERE.";
-
-    while (pos < q.size() && q[pos] == ' ') pos++;
-    std::string wVal = q.substr(pos);
-    if (wVal.size() >= 2 && wVal.front() == '"' && wVal.back() == '"')
-        wVal = wVal.substr(1, wVal.size() - 2);
-
-    int whereIdx = t->GetColumnIndex(wCol);
-    if (whereIdx < 0)
-        return "Error: La columna \"" + wCol + "\" no existe en la tabla \"" + table + "\".";
-
-    // Normalizar BOOL si corresponde
-    if (t->schema.columns[whereIdx].type == ColumnType::BOOL) {
-        std::string low = ToLower(wVal);
-        if (low == "1" || low == "true") wVal = "true";
-        else if (low == "0" || low == "false") wVal = "false";
-    }
-
-    // Full scan + update matching
-    RecordManager rm(t->binPath, t->schema, ReplacementPolicy::LRU);
-    std::vector<std::pair<int,int>> locs;
-    rm.ScanAll(locs);
-    int updated = 0;
-    for (const auto& loc : locs) {
-        std::vector<unsigned char> row;
-        if (!rm.ReadRecord(loc.first, loc.second, row)) continue;
-        if ((int)row.size() != t->schema.rowSize) continue;
-
-        // Evaluar WHERE
-        const ColumnDef& wcdef = t->schema.columns[whereIdx];
-        std::string cellVal;
-        switch (wcdef.type) {
-            case ColumnType::INT32:  cellVal = std::to_string(GetFieldInt32(t->schema, row, wcdef.name)); break;
-            case ColumnType::INT64:  cellVal = std::to_string(GetFieldInt64(t->schema, row, wcdef.name)); break;
-            case ColumnType::FLOAT:  cellVal = std::to_string(GetFieldFloat(t->schema, row, wcdef.name)); break;
-            case ColumnType::DOUBLE: cellVal = std::to_string(GetFieldDouble(t->schema, row, wcdef.name)); break;
-            case ColumnType::BOOL:   cellVal = GetFieldBool(t->schema, row, wcdef.name) ? "true" : "false"; break;
-            default:                 cellVal = GetFieldString(t->schema, row, wcdef.name); break;
+        size_t afterP = 0;
+        col = ExtractParenContent(q, 0, afterP);
+        if (col.empty() && toks.size() >= 4) {
+            col = toks.back();
+            col.erase(std::remove(col.begin(), col.end(), '('), col.end());
+            col.erase(std::remove(col.begin(), col.end(), ')'), col.end());
         }
-        if (!EvalCondition(cellVal, wOp, wVal)) continue;
 
-        // Actualizar campo
-        const ColumnDef& scdef = t->schema.columns[setIdx];
-        std::vector<unsigned char> fieldBytes;
-        if (!SerializeValue(scdef, setVal, fieldBytes)) return "Error serializando valor.";
-        std::memcpy(row.data() + scdef.offset, fieldBytes.data(), fieldBytes.size());
-
-        // Escribir de vuelta
-        if (rm.UpdateRecord(loc.first, loc.second, row)) updated++;
-    }
-    return "OK. " + std::to_string(updated) + " fila(s) actualizada(s) en \"" + table + "\".";
-}
-
-// Dispatcher para INSERT/DELETE/UPDATE
-std::string ExecuteModifyQuery(Catalog& catalog, const std::string& query) {
-    std::string q = query;
-    q.erase(std::remove(q.begin(), q.end(), ';'), q.end());
-    std::vector<std::string> tokens = Tokenize(q);
-    if (tokens.empty()) return "Error de sintaxis: consulta vacia.";
-
-    std::string cmd = ToLower(tokens[0]);
-    if (cmd == "insert") return ExecuteInsert(catalog, q);
-    if (cmd == "delete") return ExecuteDelete(catalog, q);
-    if (cmd == "update") return ExecuteUpdate(catalog, q);
-    return "Error de sintaxis: comando no reconocido.";
-}
-
-void ExecuteAndPrintQuery(Catalog& catalog, const std::string& query) {
-    // El ';' es el terminador de sentencia; se remueve para no contaminar los
-    // tokens (p.ej. que la tabla quede como "titanic;" o el valor como "1;").
-    std::string q = query;
-    q.erase(std::remove(q.begin(), q.end(), ';'), q.end());
-    std::vector<std::string> tokens = Tokenize(q);
-    if (tokens.empty()) {
-        std::cout << "Error de sintaxis: consulta vacia.\n";
-        return;
-    }
-    std::string cmd = ToLower(tokens[0]);
-
-    // Despachar CREATE TABLE / DROP TABLE
-    if (cmd == "create" || cmd == "drop") {
-        std::string result = (cmd == "create") ? ExecuteCreateTable(catalog, q) : ExecuteDropTable(catalog, q);
-        std::cout << result << "\n";
+        if (!table.empty() && !col.empty() && catalog.Exists(table)) {
+            Timer tTimer;
+            tTimer.Start();
+            if (IndexManager::BuildIndex(catalog, table, col)) {
+                std::cout << "OK. Indice B+ Tree creado sobre tabla \"" << table << "\", columna \"" << col
+                          << "\" en " << std::fixed << std::setprecision(2) << tTimer.ElapsedMs() << " ms.\n";
+            } else {
+                std::cout << "Error creando el indice B+ Tree.\n";
+            }
+        } else {
+            std::cout << "Sintaxis: CREATE INDEX ON tabla (columna)\n";
+        }
         return;
     }
 
-    // Despachar INSERT / DELETE / UPDATE
-    if (cmd == "insert" || cmd == "delete" || cmd == "update") {
-        std::string result = ExecuteModifyQuery(catalog, query);
-        std::cout << result << "\n";
+    // Modificaciones (INSERT/UPDATE/DELETE/CREATE TABLE/DROP TABLE)
+    if (low.rfind("insert", 0) == 0 || low.rfind("delete", 0) == 0 || low.rfind("update", 0) == 0 ||
+        low.rfind("create table", 0) == 0 || low.rfind("drop table", 0) == 0) {
+        Timer tTimer;
+        tTimer.Start();
+        std::string res = ExecuteModifyQuery(catalog, q);
+        std::cout << res << " [" << std::fixed << std::setprecision(2) << tTimer.ElapsedMs() << " ms]\n";
         return;
     }
 
-    if (cmd != "select") {
-        std::cout << "Error de sintaxis: comando no reconocido \"" << tokens[0]
-                  << "\". Comandos soportados: SELECT, INSERT, DELETE, UPDATE, CREATE TABLE, DROP TABLE.\n";
+    if (low.rfind("select", 0) != 0) {
+        std::cout << "Consulta no reconocida. Use SELECT, INSERT, UPDATE, DELETE, CREATE INDEX o BENCHMARK.\n";
         return;
     }
 
-    // Localizar FROM.
-    size_t fromIdx = tokens.size();
-    for (size_t i = 1; i < tokens.size(); ++i) {
-        if (ToLower(tokens[i]) == "from") { fromIdx = i; break; }
+    // ---- PARSER VOLCANO COMPLETO PARA SELECT ----
+    std::vector<std::string> toks = Tokenize(q);
+
+    // Extraer clausulas principal: SELECT ... FROM ... [JOIN ...] [WHERE ...] [GROUP BY ...] [ORDER BY ...] [LIMIT ...] [OFFSET ...]
+    std::string mainTable;
+    std::string joinTable, joinCol1, joinCol2;
+    std::string whereCol, whereVal;
+    CmpOperator whereOp = CmpOperator::EQ;
+    bool hasWhere = false;
+    bool whereUsedIndex = false;
+
+    std::vector<std::string> selectCols;
+    std::vector<std::string> groupByCols;
+    std::vector<AggregateExpr> aggExprs;
+    std::vector<SortOperator::SortKey> sortKeys;
+    int limitVal = -1;
+    int offsetVal = 0;
+
+    size_t iFrom = toks.size(), iJoin = toks.size(), iWhere = toks.size(), iGroup = toks.size(), iOrder = toks.size(), iLimit = toks.size(), iOffset = toks.size();
+
+    for (size_t i = 0; i < toks.size(); ++i) {
+        std::string tLow = ToLower(toks[i]);
+        if (tLow == "from" && iFrom == toks.size()) iFrom = i;
+        else if ((tLow == "join" || tLow == "inner") && iJoin == toks.size()) iJoin = i;
+        else if (tLow == "where" && iWhere == toks.size()) iWhere = i;
+        else if (tLow == "group" && i + 1 < toks.size() && ToLower(toks[i+1]) == "by" && iGroup == toks.size()) iGroup = i;
+        else if (tLow == "order" && i + 1 < toks.size() && ToLower(toks[i+1]) == "by" && iOrder == toks.size()) iOrder = i;
+        else if (tLow == "limit" && iLimit == toks.size()) iLimit = i;
+        else if (tLow == "offset" && iOffset == toks.size()) iOffset = i;
     }
-    if (fromIdx == tokens.size()) {
+
+    if (iFrom >= toks.size() || iFrom + 1 >= toks.size()) {
         std::cout << "Error de sintaxis: falta la clausula FROM.\n";
         return;
     }
 
-    // Columnas seleccionadas (entre SELECT y FROM), separando por comas.
-    std::vector<std::string> colToks;
-    for (size_t i = 1; i < fromIdx; ++i) {
-        for (const auto& part : SplitCommas(tokens[i])) colToks.push_back(part);
-    }
-    if (colToks.empty()) {
-        std::cout << "Error de sintaxis: Falta especificar las columnas o '*' despues de SELECT.\n";
+    mainTable = toks[iFrom + 1];
+    const StoredTable* tMain = catalog.Get(mainTable);
+    if (!tMain) {
+        std::cout << "Error: La tabla \"" << mainTable << "\" no existe.\n";
         return;
     }
-    bool selectAll = (colToks.size() == 1 && colToks[0] == "*");
 
-    // Tabla.
-    if (fromIdx + 1 >= tokens.size()) {
-        std::cout << "Error de sintaxis: falta el nombre de la tabla despues de FROM.\n";
-        return;
+    // 1. Columnas SELECT y funciones de agregacion
+    size_t selectEnd = iFrom;
+    std::string selectRaw;
+    for (size_t i = 1; i < selectEnd; ++i) selectRaw += toks[i] + " ";
+
+    std::vector<std::string> rawSelectItems = SplitCommas(selectRaw);
+    for (const auto& item : rawSelectItems) {
+        std::string itemLow = ToLower(item);
+        if (itemLow.find("count(") == 0 || itemLow.find("sum(") == 0 || itemLow.find("avg(") == 0 ||
+            itemLow.find("min(") == 0 || itemLow.find("max(") == 0) {
+            AggregateExpr agg;
+            size_t pOpen = item.find('(');
+            size_t pClose = item.find(')');
+            std::string fn = ToLower(item.substr(0, pOpen));
+            std::string arg = item.substr(pOpen + 1, pClose - pOpen - 1);
+
+            if (fn == "count") agg.type = AggType::COUNT;
+            else if (fn == "sum") agg.type = AggType::SUM;
+            else if (fn == "avg") agg.type = AggType::AVG;
+            else if (fn == "min") agg.type = AggType::MIN;
+            else if (fn == "max") agg.type = AggType::MAX;
+
+            agg.colName = arg;
+            agg.alias = item;
+            aggExprs.push_back(agg);
+        } else {
+            selectCols.push_back(item);
+        }
     }
-    std::string table = tokens[fromIdx + 1];
 
-    // WHERE (opcional).
-    bool hasWhere = false;
-    std::string wCol, wVal;
-    CmpOp wOp = CmpOp::EQ;
-    size_t wIdx = fromIdx + 2;
-    if (wIdx < tokens.size()) {
-        if (ToLower(tokens[wIdx]) != "where") {
-            std::cout << "Error de sintaxis: se esperaba WHERE despues de la tabla.\n";
-            return;
+    // 2. Parsers adicionales (JOIN, WHERE, GROUP BY, ORDER BY, LIMIT, OFFSET)
+    if (iJoin < toks.size()) {
+        size_t idx = (ToLower(toks[iJoin]) == "inner") ? iJoin + 2 : iJoin + 1;
+        if (idx < toks.size()) joinTable = toks[idx];
+        for (size_t k = iJoin; k < std::min(iWhere, iGroup); ++k) {
+            if (ToLower(toks[k]) == "on" && k + 3 < toks.size()) {
+                joinCol1 = toks[k+1];
+                joinCol2 = toks[k+3];
+            }
         }
-        std::vector<std::string> cond(tokens.begin() + wIdx + 1, tokens.end());
-        if (cond.size() < 3) {
-            std::cout << "Error de sintaxis: condicion WHERE incompleta (esperado: columna operador valor).\n";
-            return;
-        }
-        wCol = cond[0];
-        if (!ParseOp(cond[1], wOp)) {
-            std::cout << "Error de sintaxis: operador no soportado en WHERE (use =, >, <, >=, <=, !=).\n";
-            return;
-        }
-        std::string val;
-        for (size_t i = 2; i < cond.size(); ++i) { if (i > 2) val += " "; val += cond[i]; }
-        wVal = StripQuotes(val);
+    }
+
+    if (iWhere < toks.size() && iWhere + 3 < toks.size()) {
         hasWhere = true;
+        whereCol = toks[iWhere + 1];
+        ParseOp(toks[iWhere + 2], whereOp);
+        whereVal = StripQuotes(toks[iWhere + 3]);
     }
 
-    // ¿Existe la tabla?
-    const StoredTable* t = catalog.Get(table);
-    if (!t) {
-        std::cout << "Error: La tabla \"" << table << "\" no existe. Asegurese de haberla cargado primero en la Opcion 1.\n";
-        return;
+    if (iGroup < toks.size()) {
+        size_t start = iGroup + 2;
+        size_t end = std::min({iOrder, iLimit, iOffset, toks.size()});
+        for (size_t k = start; k < end; ++k) {
+            if (toks[k] != ",") groupByCols.push_back(toks[k]);
+        }
     }
 
-    // Resolver columnas seleccionadas.
-    std::vector<int> selIdx;
-    if (selectAll) {
-        for (int i = 0; i < (int)t->schema.columns.size(); ++i) selIdx.push_back(i);
+    if (iOrder < toks.size()) {
+        size_t start = iOrder + 2;
+        size_t end = std::min({iLimit, iOffset, toks.size()});
+        for (size_t k = start; k < end; ++k) {
+            std::string cName = toks[k];
+            bool isAsc = true;
+            if (k + 1 < end && (ToLower(toks[k+1]) == "asc" || ToLower(toks[k+1]) == "desc")) {
+                if (ToLower(toks[k+1]) == "desc") isAsc = false;
+                k++;
+            }
+            sortKeys.push_back({cName, isAsc});
+        }
+    }
+
+    if (iLimit < toks.size() && iLimit + 1 < toks.size()) {
+        limitVal = std::atoi(toks[iLimit + 1].c_str());
+    }
+
+    if (iOffset < toks.size() && iOffset + 1 < toks.size()) {
+        offsetVal = std::atoi(toks[iOffset + 1].c_str());
+    }
+
+    // ---- CONSTRUCCION DEL ARBOL DE OPERADORES VOLCANO ----
+    Timer timer;
+    timer.Start();
+
+    std::unique_ptr<Operator> plan;
+
+    // A. Seleccion de operador base (B+ Tree Index Scan o Full Scan)
+    if (hasWhere && whereOp == CmpOperator::EQ && IndexManager::HasIndex(mainTable, whereCol)) {
+        plan = std::make_unique<IndexScanOperator>(*tMain, whereCol, whereVal);
+        whereUsedIndex = true;
     } else {
-        for (const auto& c : colToks) {
-            int idx = t->GetColumnIndex(c);
-            if (idx < 0) {
-                std::cout << "Error: La columna \"" << c << "\" no existe en la tabla \"" << table << "\".\n";
-                return;
-            }
-            selIdx.push_back(idx);
-        }
+        plan = std::make_unique<ScanOperator>(*tMain);
     }
 
-    // Resolver columna del WHERE.
-    int whereIdx = -1;
-    if (hasWhere) {
-        whereIdx = t->GetColumnIndex(wCol);
-        if (whereIdx < 0) {
-            std::cout << "Error: La columna \"" << wCol << "\" no existe en la tabla \"" << table << "\".\n";
-            return;
-        }
-        // Si la columna es BOOL, normaliza el valor de comparacion a
-        // "true"/"false" (el usuario puede escribir 1/0 o true/false).
-        if (t->schema.columns[whereIdx].type == ColumnType::BOOL) {
-            std::string low = ToLower(wVal);
-            if (low == "1" || low == "true") wVal = "true";
-            else if (low == "0" || low == "false") wVal = "false";
-        }
+    // B. JOIN (si corresponde)
+    if (!joinTable.empty() && catalog.Exists(joinTable)) {
+        const StoredTable* tJoin = catalog.Get(joinTable);
+        auto rightScan = std::make_unique<ScanOperator>(*tJoin);
+        plan = std::make_unique<NestedLoopJoinOperator>(std::move(plan), std::move(rightScan), joinCol1, joinCol2);
     }
 
-    // Proyectar una fila de bytes a strings segun el esquema.
-    auto Project = [&](const std::vector<unsigned char>& row) {
-        std::vector<std::string> proj;
-        proj.reserve(selIdx.size());
-        for (int i : selIdx) {
-            const ColumnDef& c = t->schema.columns[i];
-            switch (c.type) {
-                case ColumnType::INT32:  proj.push_back(std::to_string(GetFieldInt32(t->schema, row, c.name))); break;
-                case ColumnType::INT64:  proj.push_back(std::to_string(GetFieldInt64(t->schema, row, c.name))); break;
-                case ColumnType::FLOAT:  proj.push_back(std::to_string(GetFieldFloat(t->schema, row, c.name))); break;
-                case ColumnType::DOUBLE: proj.push_back(std::to_string(GetFieldDouble(t->schema, row, c.name))); break;
-                case ColumnType::BOOL:   proj.push_back(GetFieldBool(t->schema, row, c.name) ? "true" : "false"); break;
-                default:                 proj.push_back(GetFieldString(t->schema, row, c.name)); break;
-            }
-        }
-        return proj;
-    };
+    // C. WHERE (si no fue resuelto completamente por el Indice B+ Tree)
+    if (hasWhere && !whereUsedIndex) {
+        plan = std::make_unique<SelectOperator>(std::move(plan), whereCol, whereOp, whereVal);
+    }
 
-    // Valor de una celda como texto, respetando el tipo real de la columna
-    // (para que el WHERE compare numericamente o como texto correctamente).
-    auto CellToString = [&](const std::vector<unsigned char>& row, int colIdx) -> std::string {
-        const ColumnDef& c = t->schema.columns[colIdx];
-        switch (c.type) {
-            case ColumnType::INT32:  return std::to_string(GetFieldInt32(t->schema, row, c.name));
-            case ColumnType::INT64:  return std::to_string(GetFieldInt64(t->schema, row, c.name));
-            case ColumnType::FLOAT:  return std::to_string(GetFieldFloat(t->schema, row, c.name));
-            case ColumnType::DOUBLE: return std::to_string(GetFieldDouble(t->schema, row, c.name));
-            case ColumnType::BOOL:   return GetFieldBool(t->schema, row, c.name) ? "true" : "false";
-            default:                 return GetFieldString(t->schema, row, c.name);
-        }
-    };
+    // D. GROUP BY y Agregaciones
+    if (!groupByCols.empty() || !aggExprs.empty()) {
+        plan = std::make_unique<HashAggregateOperator>(std::move(plan), groupByCols, aggExprs);
+    }
 
-    // Evaluar sobre las filas del heap file (full scan en streaming).
-    std::vector<std::vector<std::string>> result;
-    long long totalMatching = 0;
-    ScanTable(*t, [&](int, int, const std::vector<unsigned char>& row) {
-        if (hasWhere) {
-            std::string cell = CellToString(row, whereIdx);
-            if (!EvalCondition(cell, wOp, wVal)) return;
-        }
-        ++totalMatching;
-        result.push_back(Project(row));
-    });
+    // E. Proyeccion (si no es SELECT *)
+    if (selectCols.size() == 1 && selectCols[0] == "*") {
+        // mantener todas las columnas
+    } else if (!selectCols.empty() && aggExprs.empty()) {
+        plan = std::make_unique<ProjectOperator>(std::move(plan), selectCols);
+    }
 
-    std::vector<std::string> headers;
-    for (int i : selIdx) headers.push_back(t->schema.columns[i].name);
+    // F. ORDER BY
+    if (!sortKeys.empty()) {
+        plan = std::make_unique<SortOperator>(std::move(plan), sortKeys);
+    }
 
-    // Vista previa (el spec muestra un numero limitado de filas; ajustable).
-    const int PREVIEW_LIMIT = 2;
-    size_t shown = (size_t)PREVIEW_LIMIT < result.size() ? (size_t)PREVIEW_LIMIT : result.size();
-    std::vector<std::vector<std::string>> preview(result.begin(), result.begin() + shown);
-    PrintTable(headers, preview);
+    // G. LIMIT y OFFSET
+    if (limitVal >= 0 || offsetVal > 0) {
+        plan = std::make_unique<LimitOffsetOperator>(std::move(plan), limitVal, offsetVal);
+    }
 
-    if (hasWhere)
-        std::cout << "[Mostrando " << shown << " de " << totalMatching << " filas que cumplen la condicion]\n";
-    else
-        std::cout << "[Mostrando " << shown << " de " << totalMatching << " filas]\n";
+    // ---- EJECUCION VIA VOLCANO ITERATOR MODEL ----
+    plan->Open();
+    Tuple tuple;
+    std::vector<std::vector<std::string>> results;
+    while (plan->Next(tuple)) {
+        results.push_back(tuple.values);
+    }
+    plan->Close();
+
+    double elapsedMs = timer.ElapsedMs();
+
+    PrintTable(plan->GetOutputColumns(), results);
+
+    std::cout << "[" << results.size() << " fila(s) devuelta(s) en "
+              << std::fixed << std::setprecision(2) << elapsedMs << " ms";
+    if (whereUsedIndex) std::cout << " (USANDO INDICE B+ TREE)";
+    std::cout << "]\n";
 }
 
 void RunSqlCli(Catalog& catalog) {
     std::cout << "Motor SQL CLI con Auto-Complete (escriba QUIT para regresar al menu principal).\n";
-    std::cout << "  - Tecla TAB / Flechas para sugerencias interactiva tipo IDE.\n";
-    std::string line;
+    std::cout << "  - Soporta consultas multilinea (finalice con ';' o presione Enter al terminar).\n";
+    std::cout << "  - Tecla TAB / Flechas para sugerencias interactivas tipo IDE.\n";
+
+    std::string buffer;
+
+    auto HasUnclosedParensOrQuotes = [](const std::string& s) {
+        int parens = 0;
+        bool inQuotes = false;
+        for (char c : s) {
+            if (c == '"') inQuotes = !inQuotes;
+            if (!inQuotes) {
+                if (c == '(') parens++;
+                else if (c == ')') parens--;
+            }
+        }
+        return parens > 0 || inQuotes;
+    };
+
     while (true) {
-        line = cli::ReadLineWithAutoComplete("SQL> ", &catalog);
+        std::string prompt = buffer.empty() ? "SQL> " : "  -> ";
+        std::string line = cli::ReadLineWithAutoComplete(prompt, &catalog);
+
         size_t a = line.find_first_not_of(" \t\r\n");
-        if (a == std::string::npos) continue;     // linea vacia
-        size_t b = line.find_last_not_of(" \t\r\n");
-        line = line.substr(a, b - a + 1);
-        if (ToLower(line) == "quit") break;
-        ExecuteAndPrintQuery(catalog, line);
+        if (buffer.empty() && a != std::string::npos) {
+            std::string lowLine = ToLower(line.substr(a));
+            if (lowLine == "quit") break;
+            if (lowLine == "clear") {
+                std::cout << "\x1b[2J\x1b[H";
+                continue;
+            }
+        }
+
+        std::string trimmedLine = (a != std::string::npos) ? line.substr(a) : "";
+
+        if (buffer.empty() && ToLower(trimmedLine) == "quit") break;
+
+        if (!trimmedLine.empty()) {
+            if (!buffer.empty()) buffer += " ";
+            buffer += trimmedLine;
+        }
+
+        if (buffer.empty()) continue;
+
+        std::string lowBuf = ToLower(buffer);
+        if (lowBuf == "quit") break;
+
+        bool endsWithSemicolon = (buffer.back() == ';');
+        bool isSingleLineCmd = (lowBuf.rfind("benchmark", 0) == 0 || lowBuf == "list" || lowBuf == "show tables");
+        bool unclosed = HasUnclosedParensOrQuotes(buffer);
+
+        // Si termina en ';', es comando de una linea, o no hay parentesis abiertos y la linea fue vacia o termino la consulta:
+        if (endsWithSemicolon || isSingleLineCmd || (!unclosed && (trimmedLine.empty() || endsWithSemicolon || line.find(';') != std::string::npos))) {
+            ExecuteAndPrintQuery(catalog, buffer);
+            buffer.clear();
+        } else {
+            // Continuar en la siguiente linea
+        }
     }
 }

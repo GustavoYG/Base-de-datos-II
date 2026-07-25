@@ -27,3 +27,5 @@ opencode.json
 *.wal
 *.bin
 *.schema
+*.idx
+*.idx.meta

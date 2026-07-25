@@ -9,8 +9,10 @@
 
 const std::vector<std::string> SqlCompleter::kKeywords = {
     "SELECT", "FROM", "WHERE", "INSERT INTO", "VALUES", "UPDATE", "SET",
-    "DELETE FROM", "CREATE TABLE", "DROP TABLE", "LIST", "QUIT", "SHOW TABLES",
-    "AND", "OR", "LIMIT"
+    "DELETE FROM", "CREATE TABLE", "DROP TABLE", "CREATE INDEX ON", "BENCHMARK",
+    "JOIN", "INNER JOIN", "ON", "GROUP BY", "ORDER BY", "ASC", "DESC",
+    "LIMIT", "OFFSET", "COUNT", "SUM", "AVG", "MIN", "MAX",
+    "LIST", "QUIT", "SHOW TABLES", "AND", "OR"
 };
 
 const std::vector<std::string> SqlCompleter::kDataTypes = {

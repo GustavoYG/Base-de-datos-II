@@ -1,4 +1,0 @@
-PassengerId INT32 0
-Name STRING 11
-Sex STRING 6
-Age INT32 0
