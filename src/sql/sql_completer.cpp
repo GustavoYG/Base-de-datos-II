@@ -87,8 +87,39 @@ static std::string ExtractReferencedTable(const std::vector<TokenPos>& tokens, c
                 if (catalog->Exists(cand)) return cand;
             }
         }
+        // Soporte para JOIN tabla
+        if (tLower == "join") {
+            if (i + 1 < tokens.size()) {
+                std::string cand = tokens[i + 1].text;
+                if (catalog->Exists(cand)) return cand;
+            }
+        }
     }
     return "";
+}
+
+// Construye un CompletionItem de KEYWORD listo para insertar
+static CompletionItem MakeKeyword(const std::string& text, size_t replaceStart, size_t replaceLength) {
+    CompletionItem item;
+    item.text = text;
+    item.display = text;
+    item.detail = "[KEYWORD]";
+    item.category = CompletionCategory::KEYWORD;
+    item.replaceStart = replaceStart;
+    item.replaceLength = replaceLength;
+    return item;
+}
+
+// Construye un CompletionItem de DATATYPE listo para insertar
+static CompletionItem MakeDataType(const std::string& text, size_t replaceStart, size_t replaceLength) {
+    CompletionItem item;
+    item.text = text;
+    item.display = text;
+    item.detail = "[TIPO]";
+    item.category = CompletionCategory::DATATYPE;
+    item.replaceStart = replaceStart;
+    item.replaceLength = replaceLength;
+    return item;
 }
 
 } // namespace
@@ -122,70 +153,164 @@ std::vector<CompletionItem> SqlCompleter::GetCompletions(
 
     std::string lastToken;
     std::string prevToken;
+    std::string prevPrevToken;
     if (!tokens.empty()) {
         lastToken = Lower(tokens.back().text);
         if (tokens.size() >= 2) {
             prevToken = Lower(tokens[tokens.size() - 2].text);
         }
+        if (tokens.size() >= 3) {
+            prevPrevToken = Lower(tokens[tokens.size() - 3].text);
+        }
     }
 
     std::string refTable = ExtractReferencedTable(tokens, catalog);
 
-    bool suggestTables = false;
-    bool suggestColumns = false;
+    bool suggestTables    = false;
+    bool suggestColumns   = false;
     bool suggestDataTypes = false;
-    bool suggestKeywords = false;
-    bool suggestValues = false;
+    bool suggestKeywords  = false;
+    bool suggestValues    = false;
 
+    // -------------------------------------------------------------------------
     // Analisis contextual basado en el ultimo token relevante
+    // -------------------------------------------------------------------------
     if (tokens.empty()) {
+        // Inicio de consulta: solo keywords de primer nivel
         suggestKeywords = true;
+
     } else if (lastToken == "from" || lastToken == "into" || lastToken == "update" ||
                (lastToken == "table" && (prevToken == "create" || prevToken == "drop"))) {
+        // FROM <tabla>, INTO <tabla>, UPDATE <tabla>, CREATE/DROP TABLE <tabla>
         suggestTables = true;
-    } else if (lastToken == "select" || lastToken == "where" || lastToken == "set" || lastToken == "and" || lastToken == "or") {
+
+    } else if (lastToken == "join") {
+        // JOIN <tabla>
+        suggestTables = true;
+
+    } else if (lastToken == "inner") {
+        // INNER JOIN <—>  sugerir "JOIN"
+        {
+            CompletionItem item = MakeKeyword("JOIN", replaceStart, replaceLength);
+            if (StartsWithNoCase("JOIN", currentPrefix)) results.push_back(item);
+        }
+
+    } else if (lastToken == "on") {
+        // ON <tabla.columna> o <columna>: sugerir columnas de todas las tablas referenciadas
+        suggestColumns = true;
+
+    } else if (lastToken == "select" || lastToken == "where" || lastToken == "set" ||
+               lastToken == "and"    || lastToken == "or") {
+        // SELECT <col>, WHERE <col>, SET <col>, AND <col>, OR <col>
         suggestColumns = true;
         suggestKeywords = true;
+
+    } else if (lastToken == "by") {
+        // GROUP BY <col> / ORDER BY <col>
+        suggestColumns = true;
+
+    } else if (lastToken == "group") {
+        // GROUP -> sugerir BY
+        {
+            CompletionItem item = MakeKeyword("BY", replaceStart, replaceLength);
+            if (StartsWithNoCase("BY", currentPrefix)) results.push_back(item);
+        }
+
+    } else if (lastToken == "order") {
+        // ORDER -> sugerir BY
+        {
+            CompletionItem item = MakeKeyword("BY", replaceStart, replaceLength);
+            if (StartsWithNoCase("BY", currentPrefix)) results.push_back(item);
+        }
+
     } else if (lastToken == "create") {
-        CompletionItem item;
-        item.text = "TABLE";
-        item.display = "TABLE";
-        item.detail = "[KEYWORD]";
-        item.category = CompletionCategory::KEYWORD;
-        item.replaceStart = replaceStart;
-        item.replaceLength = replaceLength;
-        if (StartsWithNoCase("TABLE", currentPrefix)) results.push_back(item);
+        // CREATE -> TABLE / INDEX
+        for (const auto& kw : {"TABLE", "INDEX"}) {
+            CompletionItem item = MakeKeyword(kw, replaceStart, replaceLength);
+            if (StartsWithNoCase(kw, currentPrefix)) results.push_back(item);
+        }
+
     } else if (lastToken == "drop") {
-        CompletionItem item;
-        item.text = "TABLE";
-        item.display = "TABLE";
-        item.detail = "[KEYWORD]";
-        item.category = CompletionCategory::KEYWORD;
-        item.replaceStart = replaceStart;
-        item.replaceLength = replaceLength;
-        if (StartsWithNoCase("TABLE", currentPrefix)) results.push_back(item);
+        // DROP -> TABLE
+        {
+            CompletionItem item = MakeKeyword("TABLE", replaceStart, replaceLength);
+            if (StartsWithNoCase("TABLE", currentPrefix)) results.push_back(item);
+        }
+
+    } else if (lastToken == "index") {
+        // CREATE INDEX -> ON
+        {
+            CompletionItem item = MakeKeyword("ON", replaceStart, replaceLength);
+            if (StartsWithNoCase("ON", currentPrefix)) results.push_back(item);
+        }
+
     } else if (lastToken == "insert") {
-        CompletionItem item;
-        item.text = "INTO";
-        item.display = "INTO";
-        item.detail = "[KEYWORD]";
-        item.category = CompletionCategory::KEYWORD;
-        item.replaceStart = replaceStart;
-        item.replaceLength = replaceLength;
-        if (StartsWithNoCase("INTO", currentPrefix)) results.push_back(item);
+        // INSERT -> INTO
+        {
+            CompletionItem item = MakeKeyword("INTO", replaceStart, replaceLength);
+            if (StartsWithNoCase("INTO", currentPrefix)) results.push_back(item);
+        }
+
     } else if (lastToken == "delete") {
-        CompletionItem item;
-        item.text = "FROM";
-        item.display = "FROM";
-        item.detail = "[KEYWORD]";
-        item.category = CompletionCategory::KEYWORD;
-        item.replaceStart = replaceStart;
-        item.replaceLength = replaceLength;
-        if (StartsWithNoCase("FROM", currentPrefix)) results.push_back(item);
+        // DELETE -> FROM
+        {
+            CompletionItem item = MakeKeyword("FROM", replaceStart, replaceLength);
+            if (StartsWithNoCase("FROM", currentPrefix)) results.push_back(item);
+        }
+
+    } else if (lastToken == "show") {
+        // SHOW -> TABLES
+        {
+            CompletionItem item = MakeKeyword("TABLES", replaceStart, replaceLength);
+            if (StartsWithNoCase("TABLES", currentPrefix)) results.push_back(item);
+        }
+
+    } else if (lastToken == "values") {
+        // VALUES (...) -> no hay sugerencia clara de valores; sugerir nada especial
+        suggestValues = true;
+
+    } else if (lastToken == "asc" || lastToken == "desc") {
+        // Despues de ASC/DESC se puede agregar LIMIT, OFFSET u otro ORDER BY
+        for (const auto& kw : {"LIMIT", "OFFSET", "AND", "OR"}) {
+            CompletionItem item = MakeKeyword(kw, replaceStart, replaceLength);
+            if (StartsWithNoCase(kw, currentPrefix)) results.push_back(item);
+        }
+
+    } else if (lastToken == "limit") {
+        // LIMIT <N> -> solo se espera numero; sugerir nada o OFFSET
+        {
+            CompletionItem item = MakeKeyword("OFFSET", replaceStart, replaceLength);
+            if (StartsWithNoCase("OFFSET", currentPrefix)) results.push_back(item);
+        }
+
     } else {
-        // En cualquier otro punto, sugerir keywords o columnas si estamos tras un identificador
+        // En cualquier otro punto: sugerir keywords contextuales y columnas si hay tabla referenciada
         suggestKeywords = true;
         if (!refTable.empty()) suggestColumns = true;
+
+        // Si estamos dentro de parentesis de CREATE TABLE, sugerir DATA TYPES
+        // Detectar si hay una apertura de parentesis sin cierre tras "CREATE TABLE nombre"
+        // Buscamos "create" y "table" en los tokens previos
+        bool inCreateTableParen = false;
+        for (size_t i = 0; i < tokens.size(); ++i) {
+            if (Lower(tokens[i].text) == "create" && i + 1 < tokens.size() &&
+                Lower(tokens[i + 1].text) == "table") {
+                // Verificar que hay un '(' sin cerrar despues
+                size_t tableNameEnd = (i + 2 < tokens.size()) ? tokens[i + 2].end : 0;
+                int depth = 0;
+                for (size_t j = tableNameEnd; j < wordStart; ++j) {
+                    if (query[j] == '(') depth++;
+                    else if (query[j] == ')') depth--;
+                }
+                if (depth > 0) {
+                    inCreateTableParen = true;
+                }
+                break;
+            }
+        }
+        if (inCreateTableParen) {
+            suggestDataTypes = true;
+        }
     }
 
     std::set<std::string> added;
@@ -247,17 +372,22 @@ std::vector<CompletionItem> SqlCompleter::GetCompletions(
         }
     }
 
-    // 3. Sugerencias de PALABRAS CLAVE
+    // 3. Sugerencias de TIPOS DE DATOS
+    if (suggestDataTypes) {
+        for (const auto& dt : kDataTypes) {
+            if (StartsWithNoCase(dt, currentPrefix) && !added.count(Lower(dt))) {
+                CompletionItem item = MakeDataType(dt, replaceStart, replaceLength);
+                results.push_back(item);
+                added.insert(Lower(dt));
+            }
+        }
+    }
+
+    // 4. Sugerencias de PALABRAS CLAVE
     if (suggestKeywords) {
         for (const auto& kw : kKeywords) {
             if (StartsWithNoCase(kw, currentPrefix) && !added.count(Lower(kw))) {
-                CompletionItem item;
-                item.text = kw;
-                item.display = kw;
-                item.detail = "[KEYWORD]";
-                item.category = CompletionCategory::KEYWORD;
-                item.replaceStart = replaceStart;
-                item.replaceLength = replaceLength;
+                CompletionItem item = MakeKeyword(kw, replaceStart, replaceLength);
                 results.push_back(item);
                 added.insert(Lower(kw));
             }
