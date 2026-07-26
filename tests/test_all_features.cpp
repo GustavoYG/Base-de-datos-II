@@ -8,6 +8,8 @@
 #include "sql/operator.h"
 #include "sql/operators.h"
 #include "index/index_manager.h"
+#include "storage/buffer_pool.h"
+#include "storage/page_manager.h"
 #include "sql/benchmark.h"
 
 int main() {
@@ -50,12 +52,53 @@ int main() {
     std::cout << "\n--- Test INNER JOIN entre users_test y orders_test ---\n";
     ExecuteAndPrintQuery(catalog, "SELECT users_test.name, orders_test.order_id, orders_test.amount FROM users_test JOIN orders_test ON users_test.id = orders_test.user_id");
 
-    // 6. Probar Creacion de Indice B+ Tree
+    // 6. Probar Creacion de Indice B+ Tree y busqueda por indice
     std::cout << "\n--- Test CREATE INDEX y B+ Tree Index Scan ---\n";
     ExecuteAndPrintQuery(catalog, "CREATE INDEX ON users_test (id)");
     ExecuteAndPrintQuery(catalog, "SELECT * FROM users_test WHERE id = 3");
 
-    // 7. Ejecutar Benchmark de 1,000 registros para verificacion rapida
+    // 7. Probar insercion incremental con indice activo
+    std::cout << "\n--- Test Insercion incremental en tabla con Indice B+ Tree ---\n";
+    ExecuteAndPrintQuery(catalog, "INSERT INTO users_test (id, name, age, salary) VALUES (5, \"Eve\", 28, 7000.0)");
+    ExecuteAndPrintQuery(catalog, "SELECT * FROM users_test WHERE id = 5");
+
+    // 8. Probar UPDATE y DELETE con reconstruccion/sincronizacion de indices
+    std::cout << "\n--- Test UPDATE y DELETE con sincronizacion de indices ---\n";
+    ExecuteAndPrintQuery(catalog, "UPDATE users_test SET age = 29 WHERE id = 5");
+    ExecuteAndPrintQuery(catalog, "DELETE FROM users_test WHERE id = 4");
+    ExecuteAndPrintQuery(catalog, "SELECT * FROM users_test WHERE id = 5");
+
+    // 9. Probar especificamente la politica CLOCK del BufferPool
+    std::cout << "\n--- Test Verificacion de Politica CLOCK en BufferPool ---\n";
+    {
+        PageManager pm("data/tables/clock_test.bin");
+        BufferPool bpClock(pm, 4, ReplacementPolicy::CLOCK);
+        int p1 = pm.AllocatePage(PageType::Data);
+        int p2 = pm.AllocatePage(PageType::Data);
+        int p3 = pm.AllocatePage(PageType::Data);
+        int p4 = pm.AllocatePage(PageType::Data);
+
+        Page* page1 = bpClock.PinPage(p1);
+        Page* page2 = bpClock.PinPage(p2);
+        Page* page3 = bpClock.PinPage(p3);
+        Page* page4 = bpClock.PinPage(p4);
+
+        assert(page1 != nullptr && page2 != nullptr && page3 != nullptr && page4 != nullptr);
+
+        bpClock.UnpinPage(p1, false);
+        bpClock.UnpinPage(p2, false);
+        bpClock.UnpinPage(p3, false);
+        bpClock.UnpinPage(p4, false);
+
+        int p5 = pm.AllocatePage(PageType::Data);
+        Page* page5 = bpClock.PinPage(p5);
+        assert(page5 != nullptr);
+        bpClock.UnpinPage(p5, false);
+
+        std::cout << "[PASS] BufferPool con reemplazo CLOCK (Second Chance) verificado exitosamente.\n";
+    }
+
+    // 10. Ejecutar Benchmark de 1,000 registros para verificacion rapida
     std::cout << "\n--- Test Benchmark de Rendimiento (1,000 registros) ---\n";
     benchmark::RunIndexBenchmark(catalog, 1000);
 

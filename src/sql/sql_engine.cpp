@@ -18,6 +18,7 @@
 #include "sql/operator.h"
 #include "sql/operators.h"
 #include "index/index_manager.h"
+#include "index/bplus_tree.h"
 #include "sql/benchmark.h"
 
 namespace {
@@ -237,10 +238,23 @@ static std::string ExecuteInsert(Catalog& catalog, const std::string& rawQuery) 
         return "Error: no se pudo insertar el registro.";
     }
 
-    // Reconstruir indices si existen
+    // Actualizar incrementalmente los indices existentes
     for (const auto& cdef : t->schema.columns) {
         if (IndexManager::HasIndex(table, cdef.name)) {
-            IndexManager::BuildIndex(catalog, table, cdef.name);
+            std::string indexPath = IndexManager::GetIndexPath(table, cdef.name);
+            BPlusTree bTree(indexPath, cdef.type);
+            BTreeKey key;
+            if (cdef.type == ColumnType::INT32) {
+                int32_t val = GetFieldInt32(t->schema, row, cdef.name);
+                BTreeKeyFromInt32(key, val);
+            } else if (cdef.type == ColumnType::FLOAT) {
+                float val = GetFieldFloat(t->schema, row, cdef.name);
+                BTreeKeyFromFloat(key, val);
+            } else {
+                std::string val = GetFieldString(t->schema, row, cdef.name);
+                BTreeKeyFromString(key, val, cdef.length);
+            }
+            bTree.Insert(key, pId, (int16_t)slot);
         }
     }
 
@@ -637,8 +651,9 @@ void ExecuteAndPrintQuery(Catalog& catalog, const std::string& query) {
     std::unique_ptr<Operator> plan;
 
     // A. Seleccion de operador base (B+ Tree Index Scan o Full Scan)
-    if (hasWhere && whereOp == CmpOperator::EQ && IndexManager::HasIndex(mainTable, whereCol)) {
-        plan = std::make_unique<IndexScanOperator>(*tMain, whereCol, whereVal);
+    std::string cleanWhereCol = StripTablePrefix(whereCol);
+    if (hasWhere && whereOp == CmpOperator::EQ && IndexManager::HasIndex(mainTable, cleanWhereCol)) {
+        plan = std::make_unique<IndexScanOperator>(*tMain, cleanWhereCol, whereVal);
         whereUsedIndex = true;
     } else {
         plan = std::make_unique<ScanOperator>(*tMain);

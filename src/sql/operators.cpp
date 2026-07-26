@@ -10,16 +10,11 @@
 
 #include "storage/record_manager.h"
 #include "index/bplus_tree.h"
+#include "index/index_manager.h"
 #include "io/serializer.h"
 #include "common/utils.h"
 
 namespace {
-
-static std::string StripTablePrefix(const std::string& col) {
-    size_t pos = col.find('.');
-    if (pos != std::string::npos) return col.substr(pos + 1);
-    return col;
-}
 
 static bool IsNumeric(const std::string& s) {
     if (s.empty()) return false;
@@ -116,11 +111,12 @@ void IndexScanOperator::Open() {
     resultRows_.clear();
     currentIndex_ = 0;
 
-    int colIdx = table_.GetColumnIndex(colName_);
+    std::string cleanCol = StripTablePrefix(colName_);
+    int colIdx = table_.GetColumnIndex(cleanCol);
     if (colIdx < 0) return;
     const ColumnDef& cdef = table_.schema.columns[colIdx];
 
-    std::string indexPath = Catalog::kTablesDir + "/" + table_.name + "_" + colName_ + ".idx";
+    std::string indexPath = IndexManager::GetIndexPath(table_.name, cleanCol);
 
     BPlusTree bTree(indexPath, cdef.type);
 

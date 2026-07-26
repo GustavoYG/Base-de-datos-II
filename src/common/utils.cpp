@@ -38,3 +38,9 @@ std::string ToLower(const std::string& s) {
     for (char& c : r) c = (char)std::tolower((unsigned char)c);
     return r;
 }
+
+std::string StripTablePrefix(const std::string& col) {
+    size_t pos = col.find('.');
+    if (pos != std::string::npos) return col.substr(pos + 1);
+    return col;
+}
