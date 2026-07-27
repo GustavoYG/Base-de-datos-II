@@ -2,8 +2,11 @@
 
 #include <fstream>
 #include <cstring>
+#include <filesystem>
 
 #include "common/utils.h"
+
+namespace fs = std::filesystem;
 
 PageManager::PageManager(const std::string& filePath) : path(filePath) {}
 
@@ -15,6 +18,8 @@ int PageManager::GetPageCount() const {
 }
 
 int PageManager::AllocatePage(PageType type) {
+    std::error_code ec;
+    fs::create_directories(fs::path(path).parent_path(), ec);
     std::fstream f(path.c_str(), std::ios::in | std::ios::out | std::ios::binary);
     if (!f) {
         f.open(path.c_str(), std::ios::out | std::ios::binary);

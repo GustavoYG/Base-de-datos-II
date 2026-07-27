@@ -112,11 +112,32 @@ void Catalog::PrintLoadedTables() const {
     }
 }
 
+static ColumnType ParseColumnTypeStr(const std::string& typeStr) {
+    std::string s = typeStr;
+    for (char& c : s) c = (char)std::tolower((unsigned char)c);
+    if (s == "int" || s == "int32" || s == "integer") return ColumnType::INT32;
+    if (s == "int64" || s == "bigint") return ColumnType::INT64;
+    if (s == "float" || s == "real") return ColumnType::FLOAT;
+    if (s == "double") return ColumnType::DOUBLE;
+    if (s == "bool" || s == "boolean") return ColumnType::BOOL;
+    return ColumnType::STRING;
+}
+
 bool Catalog::CreateTable(const std::string& name, const std::vector<std::string>& columns) {
     if (Exists(name)) return false;
+    std::error_code ec;
+    fs::create_directories(kTablesDir, ec);
     Schema schema;
-    for (const auto& col : columns)
-        schema.AddColumn(col, ColumnType::STRING, DEFAULT_VARCHAR_LEN);
+    for (const auto& rawCol : columns) {
+        std::istringstream ss(rawCol);
+        std::string colName, typeStr;
+        ss >> colName;
+        if (ss >> typeStr) {
+            schema.AddColumn(colName, ParseColumnTypeStr(typeStr), DEFAULT_VARCHAR_LEN);
+        } else {
+            schema.AddColumn(colName, ColumnType::STRING, DEFAULT_VARCHAR_LEN);
+        }
+    }
     schema.Finalize();
     std::string schPath = schemaio::SchemaPath(kTablesDir, name);
     if (!schemaio::SaveSchema(schPath, schema)) return false;
