@@ -37,6 +37,18 @@ static void EnableVirtualTerminal() {
 #endif
 }
 
+static int GetTerminalWidth() {
+#ifdef _WIN32
+    CONSOLE_SCREEN_BUFFER_INFO csbi;
+    HANDLE hOut = GetStdHandle(STD_OUTPUT_HANDLE);
+    if (GetConsoleScreenBufferInfo(hOut, &csbi)) {
+        int w = csbi.srWindow.Right - csbi.srWindow.Left + 1;
+        if (w > 0) return w;
+    }
+#endif
+    return 120;
+}
+
 // Historial simple de consultas ejecutas en la sesión
 static std::vector<std::string> gHistory;
 
@@ -61,15 +73,15 @@ std::string ReadLineWithAutoComplete(const std::string& prompt, const Catalog* c
     int lastRenderedPopupLines = 0;
 
     auto Redraw = [&](const std::vector<CompletionItem>& completions) {
-        // Limpiar popup previo si existia
-        for (int i = 0; i < lastRenderedPopupLines; ++i) {
-            std::cout << "\n\x1b[K"; // nueva linea y limpiar
-        }
+        // Limpiar todo lo renderizado abajo desde el prompt anterior
         if (lastRenderedPopupLines > 0) {
-            std::cout << "\x1b[" << lastRenderedPopupLines << "A"; // subir N lineas
+            for (int i = 0; i < lastRenderedPopupLines; ++i) {
+                std::cout << "\n\x1b[K";
+            }
+            std::cout << "\x1b[" << lastRenderedPopupLines << "A";
         }
 
-        // Ir al inicio del prompt
+        // Limpiar linea actual y repintar el prompt completo
         std::cout << "\r\x1b[K" << prompt << line;
 
         // Mostrar inline ghost text si hay sugerencia activa
@@ -88,9 +100,12 @@ std::string ReadLineWithAutoComplete(const std::string& prompt, const Catalog* c
             std::cout << "\x1b[90m" << ghostText << "\x1b[0m"; // Gris tenue
         }
 
-        // Posicionar cursor real
+        // Posicionar el cursor real en el prompt de forma precisa
+        int termWidth = GetTerminalWidth();
         size_t totalCol = prompt.size() + cursor;
-        std::cout << "\r\x1b[" << totalCol << "C";
+        if (totalCol < (size_t)termWidth) {
+            std::cout << "\r\x1b[" << totalCol << "C";
+        }
 
         // Renderizar menu emergente debajo (hasta 5 elementos)
         int popupLines = 0;
@@ -129,7 +144,9 @@ std::string ReadLineWithAutoComplete(const std::string& prompt, const Catalog* c
 
             // Subir el cursor de vuelta al prompt
             std::cout << "\x1b[" << (popupLines + 1) << "A";
-            std::cout << "\r\x1b[" << totalCol << "C";
+            if (totalCol < (size_t)termWidth) {
+                std::cout << "\r\x1b[" << totalCol << "C";
+            }
         }
         std::cout.flush();
 

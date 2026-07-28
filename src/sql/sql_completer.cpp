@@ -137,7 +137,7 @@ std::vector<CompletionItem> SqlCompleter::GetCompletions(
     size_t wordStart = effectiveCursor;
     while (wordStart > 0) {
         char c = query[wordStart - 1];
-        if (std::isalnum((unsigned char)c) || c == '_' || c == '*') {
+        if (std::isalnum((unsigned char)c) || c == '_' || c == '*' || c == '.') {
             wordStart--;
         } else {
             break;
@@ -284,9 +284,23 @@ std::vector<CompletionItem> SqlCompleter::GetCompletions(
         }
 
     } else {
-        // En cualquier otro punto: sugerir keywords contextuales y columnas si hay tabla referenciada
+        // En cualquier otro punto: sugerir keywords contextuales y columnas
         suggestKeywords = true;
-        if (!refTable.empty()) suggestColumns = true;
+
+        bool hasSelect = false;
+        bool hasFrom = false;
+        for (const auto& tok : tokens) {
+            std::string tLow = Lower(tok.text);
+            if (tLow == "select") hasSelect = true;
+            if (tLow == "from") hasFrom = true;
+        }
+
+        // Si estamos entre SELECT y FROM (ej. SELECT col1, col2, ...), sugerir columnas siempre
+        if (hasSelect && !hasFrom) {
+            suggestColumns = true;
+        } else if (!refTable.empty() || currentPrefix.find('.') != std::string::npos) {
+            suggestColumns = true;
+        }
 
         // Si estamos dentro de parentesis de CREATE TABLE, sugerir DATA TYPES
         // Detectar si hay una apertura de parentesis sin cierre tras "CREATE TABLE nombre"
@@ -335,7 +349,28 @@ std::vector<CompletionItem> SqlCompleter::GetCompletions(
 
     // 2. Sugerencias de COLUMNAS
     if (suggestColumns && catalog) {
-        if (!refTable.empty() && catalog->Exists(refTable)) {
+        size_t dotPos = currentPrefix.find('.');
+        if (dotPos != std::string::npos) {
+            std::string tablePrefix = currentPrefix.substr(0, dotPos);
+            std::string colPrefix = currentPrefix.substr(dotPos + 1);
+            if (catalog->Exists(tablePrefix)) {
+                const StoredTable* t = catalog->Get(tablePrefix);
+                if (t) {
+                    for (const auto& col : t->schema.columns) {
+                        if (StartsWithNoCase(col.name, colPrefix)) {
+                            CompletionItem item;
+                            item.text = tablePrefix + "." + col.name;
+                            item.display = tablePrefix + "." + col.name;
+                            item.detail = "[COLUMNA (" + tablePrefix + ")]";
+                            item.category = CompletionCategory::COLUMN;
+                            item.replaceStart = replaceStart;
+                            item.replaceLength = replaceLength;
+                            results.push_back(item);
+                        }
+                    }
+                }
+            }
+        } else if (!refTable.empty() && catalog->Exists(refTable)) {
             const StoredTable* t = catalog->Get(refTable);
             if (t) {
                 for (const auto& col : t->schema.columns) {
@@ -349,6 +384,16 @@ std::vector<CompletionItem> SqlCompleter::GetCompletions(
                         item.replaceLength = replaceLength;
                         results.push_back(item);
                         added.insert(Lower(col.name));
+
+                        // Tambien sugerir con prefijo de tabla
+                        CompletionItem itemPref;
+                        itemPref.text = refTable + "." + col.name;
+                        itemPref.display = refTable + "." + col.name;
+                        itemPref.detail = "[COLUMNA (" + refTable + ")]";
+                        itemPref.category = CompletionCategory::COLUMN;
+                        itemPref.replaceStart = replaceStart;
+                        itemPref.replaceLength = replaceLength;
+                        results.push_back(itemPref);
                     }
                 }
             }
@@ -366,6 +411,16 @@ std::vector<CompletionItem> SqlCompleter::GetCompletions(
                         item.replaceLength = replaceLength;
                         results.push_back(item);
                         added.insert(Lower(col.name));
+
+                        // Tambien sugerir con prefijo de tabla
+                        CompletionItem itemPref;
+                        itemPref.text = kv.first + "." + col.name;
+                        itemPref.display = kv.first + "." + col.name;
+                        itemPref.detail = "[COLUMNA (" + kv.first + ")]";
+                        itemPref.category = CompletionCategory::COLUMN;
+                        itemPref.replaceStart = replaceStart;
+                        itemPref.replaceLength = replaceLength;
+                        results.push_back(itemPref);
                     }
                 }
             }

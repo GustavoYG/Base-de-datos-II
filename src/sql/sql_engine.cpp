@@ -599,11 +599,15 @@ void ExecuteAndPrintQuery(Catalog& catalog, const std::string& query) {
     if (iJoin < toks.size()) {
         size_t idx = (ToLower(toks[iJoin]) == "inner") ? iJoin + 2 : iJoin + 1;
         if (idx < toks.size()) joinTable = toks[idx];
-        for (size_t k = iJoin; k < std::min(iWhere, iGroup); ++k) {
+        for (size_t k = iJoin; k < std::min({iWhere, iGroup, iOrder, iLimit, iOffset, toks.size()}); ++k) {
             if (ToLower(toks[k]) == "on" && k + 3 < toks.size()) {
                 joinCol1 = toks[k+1];
                 joinCol2 = toks[k+3];
             }
+        }
+        if (joinCol1.empty() || joinCol2.empty()) {
+            std::cout << "Error de sintaxis: se esperaba la clausula 'ON tabla1.col1 = tabla2.col2' despues del JOIN.\n";
+            return;
         }
     }
 
