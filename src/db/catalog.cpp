@@ -66,7 +66,12 @@ bool Catalog::LoadCsv(const std::string& path) {
         "data/" + path,
         "data/raw/" + path,
         "data/raw/" + base + ".csv",
-        "data/" + base + ".csv"
+        "data/" + base + ".csv",
+        "../" + path,
+        "../data/" + path,
+        "../data/raw/" + path,
+        "../data/raw/" + base + ".csv",
+        "../data/" + base + ".csv"
     };
     std::string resolved;
     for (const auto& c : cands) {

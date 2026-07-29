@@ -23,7 +23,19 @@ static bool IsNumeric(const std::string& s) {
     return end != s.c_str() && *end == '\0';
 }
 
+static bool IsBoolVal(const std::string& s, bool& out) {
+    std::string low = ToLower(s);
+    if (low == "true" || low == "1") { out = true; return true; }
+    if (low == "false" || low == "0") { out = false; return true; }
+    return false;
+}
+
 static int CompareValues(const std::string& a, const std::string& b) {
+    bool boolA = false, boolB = false;
+    if (IsBoolVal(a, boolA) && IsBoolVal(b, boolB)) {
+        if (boolA == boolB) return 0;
+        return boolA ? 1 : -1;
+    }
     if (IsNumeric(a) && IsNumeric(b)) {
         double x = std::strtod(a.c_str(), nullptr);
         double y = std::strtod(b.c_str(), nullptr);
